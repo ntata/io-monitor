@@ -59,6 +59,7 @@
 // TODO and enhancements
 // - capture facility if specified as environment variable
 // - allow to be started in 'paused' mode (eliminate startup noise; e.g., python)
+//     maybe use x seconds time delay
 // - change (or at least support) some other IPC mechanism other than TCP sockets
 // - consider whether errors should be reported
 // - consider whether to add more fields in metrics payload:
@@ -76,6 +77,8 @@
 static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
 static const int FD_NONE = -1;
+static const char* FACILITY_ID = "FACILITY_ID";
+static int failed_socket_connections = 0;
 
 // set up some categories to group metrics
 typedef enum {
@@ -486,7 +489,12 @@ void load_library_functions() {
 
 void initialize_monitor() {
    memset(facility, 0, sizeof(facility));
-   facility[0] = 'u';  // unspecified
+   const char* facility_id = getenv(FACILITY_ID);
+   if (facility_id != NULL) {
+      strncpy(facility, facility_id, 4);
+   } else {
+      facility[0] = 'u';  // unspecified
+   }
    load_library_functions();
 }
 
@@ -507,6 +515,14 @@ void record(DOMAIN_TYPE dom_type,
    struct sockaddr_in server;
    int record_length;
    pid_t pid;
+
+   // have we already tried to connect to our peer and failed?
+   if (failed_socket_connections > 0) {
+      // don't bother proceeding since we've already been unable to reach
+      // the other side of our IPC. repeated failures just adds more
+      // latency.
+      return;
+   }
 
    // exclude things that we should not be capturing
    // since we're using sockets, we're also intercepting
@@ -605,6 +621,7 @@ void record(DOMAIN_TYPE dom_type,
          // thin shim used to intercept C library calls. we can't cause
          // the real process/application to crash or malfunction. the
          // show must go on...
+         failed_socket_connections++;
       }
       close(sockfd);
       socket_fd = FD_NONE;
