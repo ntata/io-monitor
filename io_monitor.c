@@ -57,13 +57,12 @@
 
 
 // TODO and enhancements
-// - capture facility if specified as environment variable
 // - allow to be started in 'paused' mode (eliminate startup noise; e.g., python)
 //     maybe use x seconds time delay
 // - change (or at least support) some other IPC mechanism other than TCP sockets
 // - consider whether errors should be reported
 // - consider whether to add more fields in metrics payload:
-//      -- elapsed time (nanoseconds)
+//      -- elapsed time (nanoseconds or microseconds)
 //      -- number bytes
 // - consider adding a way to filter here (inclusive or exclusive)
 // - implement missing intercept calls (FILE_SPACE, PROCESSES, etc.)
@@ -72,6 +71,7 @@
 //     server process can generate a lot of data)
 // - implement missing functions for opening/creating files
 //     http://man7.org/linux/man-pages/man2/open.2.html
+// - add number of bytes transferred (read/write)
 
 
 static const int SOCKET_PORT = 8001;
@@ -295,7 +295,6 @@ typedef int (*orig_utime_f_type)(const char* path, const struct utimbuf* times);
 // unique identifier to know originator of metrics. defaults to 'u' (unspecified)
 static char facility[5];
 static int socket_fd = -1;
-static pid_t pid = 0;
 
 // open/close
 static orig_open_f_type orig_open = NULL;
@@ -403,8 +402,6 @@ void load_library_functions() {
    if (NULL != orig_open) {
       return;
    }
-
-   pid = getpid();
 
    // open/close
    orig_open = (orig_open_f_type)dlsym(RTLD_NEXT,"open");
@@ -550,6 +547,7 @@ void record(DOMAIN_TYPE dom_type,
    }
 
    timestamp = (unsigned long)time(NULL);
+   pid = getpid();
 
    bzero(record_output, sizeof(record_output));
    if (NULL != s1) {
