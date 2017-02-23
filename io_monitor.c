@@ -33,7 +33,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <limits.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <utime.h>
@@ -166,9 +168,11 @@ void record(DOMAIN_TYPE dom_type,
 
 //***********  file io  ************
 // open
-typedef int (*orig_open_f_type)(const char* pathname, int flags);
-typedef int (*orig_open64_f_type)(const char* pathname, int flags);
+typedef int (*orig_open_f_type)(const char* pathname, int flags, ...);
+typedef int (*orig_open64_f_type)(const char* pathname, int flags, ...);
 typedef FILE* (*orig_fopen_f_type)(const char* path, const char* mode);
+typedef int (*orig_creat_f_type)(const char* path, mode_t mode);
+typedef int (*orig_creat64_f_type)(const char* path, mode_t mode);
 
 // close
 typedef int (*orig_close_f_type)(int fd);
@@ -301,6 +305,8 @@ static orig_open_f_type orig_open = NULL;
 static orig_open64_f_type orig_open64 = NULL;
 static orig_fopen_f_type orig_fopen = NULL;
 static orig_fopen_f_type orig_fopen64 = NULL;
+static orig_creat_f_type orig_creat = NULL;
+static orig_creat64_f_type orig_creat64 = NULL;
 static orig_close_f_type orig_close = NULL;
 static orig_fclose_f_type orig_fclose = NULL;
 
@@ -408,6 +414,8 @@ void load_library_functions() {
    orig_open64 = (orig_open64_f_type)dlsym(RTLD_NEXT,"open64");
    orig_fopen = (orig_fopen_f_type)dlsym(RTLD_NEXT,"fopen");
    orig_fopen64 = (orig_fopen_f_type)dlsym(RTLD_NEXT,"fopen64");
+   orig_creat = (orig_creat_f_type)dlsym(RTLD_NEXT,"creat");
+   orig_creat64 = (orig_creat64_f_type)dlsym(RTLD_NEXT,"creat64");
    orig_close = (orig_close_f_type)dlsym(RTLD_NEXT,"close");
    orig_fclose = (orig_fclose_f_type)dlsym(RTLD_NEXT,"fclose");
 
@@ -628,26 +636,60 @@ void record(DOMAIN_TYPE dom_type,
 
 //*****************************************************************************
 
-int open(const char* pathname, int flags)
+int open(const char* pathname, int flags, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("open")
    int fd = orig_open(pathname, flags);
    if (fd > -1) {
-      record(FILE_OPEN_CLOSE, OPEN, fd, pathname, NULL);
+      char* real_path = realpath(pathname, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
+      free(real_path);
    }
    return fd;
 }
 
 //*****************************************************************************
 
-int open64(const char* pathname, int flags)
+int open64(const char* pathname, int flags, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("open64")
    int fd = orig_open64(pathname, flags);
-   if (fd > -1) { 
-      record(FILE_OPEN_CLOSE, OPEN, fd, pathname, NULL);
+   if (fd > -1) {
+      char* real_path = realpath(pathname, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
+      free(real_path);
+   }
+   return fd;
+}
+
+//*****************************************************************************
+
+int creat(const char* pathname, mode_t mode)
+{
+   CHECK_LOADED_FNS()
+   PUTS("creat")
+   int fd = orig_creat(pathname, mode);
+   if (fd > -1) {
+      char* real_path = realpath(pathname, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
+      free(real_path);
+   }
+   return fd;
+}
+
+//*****************************************************************************
+
+int creat64(const char* pathname, mode_t mode)
+{
+   CHECK_LOADED_FNS()
+   PUTS("creat64")
+   int fd = orig_creat64(pathname, mode);
+   if (fd > -1) {
+      char* real_path = realpath(pathname, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
+      free(real_path);
    }
    return fd;
 }
@@ -1133,7 +1175,9 @@ FILE* fopen(const char* path, const char* mode)
    PUTS("fopen")
    FILE* rc = orig_fopen(path, mode);
    if (0 != rc) {
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), path, mode);
+      char* real_path = realpath(path, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
+      free(real_path);
    }
    return rc;
 }
@@ -1146,7 +1190,9 @@ FILE* fopen64(const char* path, const char* mode)
    PUTS("fopen64")
    FILE* rc = orig_fopen64(path, mode);
    if (0 != rc) {
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), path, mode);
+      char* real_path = realpath(path, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
+      free(real_path);
    }
    return rc;
 }
@@ -1159,7 +1205,9 @@ FILE* _IO_new_fopen(const char* path, const char* mode)
    PUTS("_IO_new_fopen")
    FILE* rc = orig_fopen(path, mode);
    if (0 != rc) {
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), path, mode);
+      char* real_path = realpath(path, NULL);
+      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
+      free(real_path);
    }
    return rc;
 }
