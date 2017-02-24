@@ -39,6 +39,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <utime.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/msg.h>
@@ -49,6 +50,7 @@
 #include <sys/uio.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 
 // to build:
@@ -56,24 +58,43 @@
 //
 // to use:
 // LD_LIBRARY=io_monitor.so ; my-process-to-monitor
+//
+// Also need socket server on other side of IPC to receive
+// the metrics
 
 
 // TODO and enhancements
 // - allow to be started in 'paused' mode (eliminate startup noise; e.g., python)
 //     maybe use x seconds time delay
 // - change (or at least support) some other IPC mechanism other than TCP sockets
-// - consider whether errors should be reported
-// - consider whether to add more fields in metrics payload:
+// - add more fields in metrics payload:
+//      -- error code/errno
 //      -- elapsed time (nanoseconds or microseconds)
-//      -- number bytes
+//      -- number bytes transferred (read/write)
 // - consider adding a way to filter here (inclusive or exclusive)
 // - implement missing intercept calls (FILE_SPACE, PROCESSES, etc.)
 // - find a better name/grouping for MISC
-// - should there be a sampling mechanism (capturing everything on a busy
+// - should there be a sampling mechanism? (capturing everything on a busy
 //     server process can generate a lot of data)
 // - implement missing functions for opening/creating files
 //     http://man7.org/linux/man-pages/man2/open.2.html
-// - add number of bytes transferred (read/write)
+
+
+#define DECL_VARS() \
+struct timeval start_time, end_time; \
+int error_code = 0;
+
+#define GET_START_TIME() \
+gettimeofday(&start_time, NULL);
+
+#define GET_END_TIME() \
+gettimeofday(&end_time, NULL);
+
+#define TIME_BEFORE() \
+&start_time
+
+#define TIME_AFTER() \
+&end_time
 
 
 static const int SOCKET_PORT = 8001;
@@ -81,6 +102,8 @@ static const int DOMAIN_UNSPECIFIED = -1;
 static const int FD_NONE = -1;
 static const char* FACILITY_ID = "FACILITY_ID";
 static int failed_socket_connections = 0;
+static const ssize_t ZERO_BYTES = 0L;
+
 
 // set up some categories to group metrics
 typedef enum {
@@ -153,8 +176,8 @@ typedef enum {
 
 
 // a debugging aid that we can easily turn off/on
-#define PUTS(s)
-//puts(s);
+#define PUTS(s) \
+puts(s);
 
 //***********  initialization  ***********
 void initialize_monitor();
@@ -164,7 +187,11 @@ void record(DOMAIN_TYPE dom_type,
             OP_TYPE op_type,
             int fd,
             const char* s1,
-            const char* s2);
+            const char* s2,
+            struct timeval* start_time,
+            struct timeval* end_time,
+            int error_code,
+            ssize_t bytes_transferred);
 
 //***********  file io  ************
 // open
@@ -509,8 +536,12 @@ void record(DOMAIN_TYPE dom_type,
             OP_TYPE op_type,
             int fd,
             const char* s1,
-            const char* s2) {
-
+            const char* s2,
+            struct timeval* start_time,
+            struct timeval* end_time,
+            int error_code,
+            ssize_t bytes_transferred)
+{
    char msg_size_header[10];
    char record_output[256];
    unsigned long timestamp;
@@ -520,6 +551,7 @@ void record(DOMAIN_TYPE dom_type,
    struct sockaddr_in server;
    int record_length;
    pid_t pid;
+   double elapsed_time;
 
    // have we already tried to connect to our peer and failed?
    if (failed_socket_connections > 0) {
@@ -554,6 +586,11 @@ void record(DOMAIN_TYPE dom_type,
       }
    }
 
+   // sec to msec
+   elapsed_time = (end_time->tv_sec - start_time->tv_sec) * 1000.0;
+   // usec to ms
+   elapsed_time += (end_time->tv_usec - start_time->tv_usec) / 1000.0;
+
    timestamp = (unsigned long)time(NULL);
    pid = getpid();
 
@@ -562,19 +599,25 @@ void record(DOMAIN_TYPE dom_type,
       if (NULL != s2) {
          snprintf(record_output,
                   sizeof(record_output),
-                  "%s,%ld,%d,%d,%d,%d,%s,%s",
-                  facility, timestamp, pid, dom_type, op_type, fd, s1, s2);
+                  "%s,%ld,%f,%d,%d,%d,%d,%d,%zu,%s,%s",
+                  facility, timestamp, elapsed_time, pid,
+                  dom_type, op_type, error_code, fd,
+                  bytes_transferred, s1, s2);
       } else {
          snprintf(record_output,
                   sizeof(record_output),
-                  "%s,%ld,%d,%d,%d,%d,%s",
-                  facility, timestamp, pid, dom_type, op_type, fd, s1);
+                  "%s,%ld,%f,%d,%d,%d,%d,%d,%zu,%s",
+                  facility, timestamp, elapsed_time, pid,
+                  dom_type, op_type, error_code, fd,
+                  bytes_transferred, s1);
       }
    } else {
       snprintf(record_output,
                sizeof(record_output),
-               "%s,%ld,%d,%d,%d,%d",
-               facility, timestamp, pid, dom_type, op_type, fd);
+               "%s,%ld,%f,%d,%d,%d,%d,%d,%zu",
+               facility, timestamp, elapsed_time, pid,
+               dom_type, op_type, error_code, fd,
+               bytes_transferred);
    }
 
    // set up a 10 byte header that includes the size (in bytes)
@@ -640,12 +683,20 @@ int open(const char* pathname, int flags, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("open")
-   int fd = orig_open(pathname, flags);
-   if (fd > -1) {
-      char* real_path = realpath(pathname, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
-      free(real_path);
+   DECL_VARS()
+   GET_START_TIME()
+   const int fd = orig_open(pathname, flags);
+   GET_END_TIME()
+
+   if (fd == -1) {
+      error_code = errno;
    }
+
+   char* real_path = realpath(pathname, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return fd;
 }
 
@@ -655,12 +706,20 @@ int open64(const char* pathname, int flags, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("open64")
-   int fd = orig_open64(pathname, flags);
-   if (fd > -1) {
-      char* real_path = realpath(pathname, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
-      free(real_path);
+   DECL_VARS()
+   GET_START_TIME()
+   const int fd = orig_open64(pathname, flags);
+   GET_END_TIME()
+
+   if (fd == -1) {
+      error_code = errno;
    }
+
+   char* real_path = realpath(pathname, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return fd;
 }
 
@@ -670,12 +729,20 @@ int creat(const char* pathname, mode_t mode)
 {
    CHECK_LOADED_FNS()
    PUTS("creat")
-   int fd = orig_creat(pathname, mode);
-   if (fd > -1) {
-      char* real_path = realpath(pathname, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
-      free(real_path);
+   DECL_VARS()
+   GET_START_TIME()
+   const int fd = orig_creat(pathname, mode);
+   GET_END_TIME()
+
+   if (fd == -1) {
+      error_code = errno;
    }
+
+   char* real_path = realpath(pathname, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return fd;
 }
 
@@ -685,12 +752,20 @@ int creat64(const char* pathname, mode_t mode)
 {
    CHECK_LOADED_FNS()
    PUTS("creat64")
-   int fd = orig_creat64(pathname, mode);
-   if (fd > -1) {
-      char* real_path = realpath(pathname, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL);
-      free(real_path);
+   DECL_VARS()
+   GET_START_TIME()
+   const int fd = orig_creat64(pathname, mode);
+   GET_END_TIME()
+
+   if (fd == -1) {
+      error_code = errno;
    }
+
+   char* real_path = realpath(pathname, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return fd;
 }
 
@@ -700,10 +775,18 @@ int close(int fd)
 {
    CHECK_LOADED_FNS()
    PUTS("close")
-   int rc = orig_close(fd);
-   if (0 == rc) {
-      record(FILE_OPEN_CLOSE, CLOSE, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_close(fd);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_OPEN_CLOSE, CLOSE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -713,11 +796,19 @@ int fclose(FILE* fp)
 {
    CHECK_LOADED_FNS()
    PUTS("fclose")
-   int fd = fileno(fp);
-   int rc = orig_fclose(fp);
-   if (rc == 0) {
-      record(FILE_OPEN_CLOSE, CLOSE, fd, NULL, NULL); 
+   DECL_VARS()
+   GET_START_TIME()
+   const int fd = fileno(fp);
+   const int rc = orig_fclose(fp);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_OPEN_CLOSE, CLOSE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -727,11 +818,19 @@ ssize_t write(int fd, const void* buf, size_t count)
 {
    CHECK_LOADED_FNS()
    PUTS("write")
-   ssize_t rc = orig_write(fd, buf, count);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_written = orig_write(fd, buf, count);
+   GET_END_TIME()
+
+   if (bytes_written < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -740,11 +839,19 @@ ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset)
 {
    CHECK_LOADED_FNS()
    PUTS("pwrite")
-   ssize_t rc = orig_pwrite(fd, buf, count, offset);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_written = orig_pwrite(fd, buf, count, offset);
+   GET_END_TIME()
+
+   if (bytes_written < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -753,11 +860,19 @@ ssize_t writev(int fd, const struct iovec* iov, int iovcnt)
 {
    CHECK_LOADED_FNS()
    PUTS("writev")
-   ssize_t rc = orig_writev(fd, iov, iovcnt);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_written = orig_writev(fd, iov, iovcnt);
+   GET_END_TIME()
+
+   if (bytes_written < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -766,11 +881,19 @@ ssize_t pwritev(int fd, const struct iovec* iov, int iovcnt, off_t offset)
 {
    CHECK_LOADED_FNS()
    PUTS("pwritev")
-   ssize_t rc = orig_pwritev(fd, iov, iovcnt, offset);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_written = orig_pwritev(fd, iov, iovcnt, offset);
+   GET_END_TIME()
+
+   if (bytes_written < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -779,14 +902,28 @@ int fprintf(FILE* stream, const char* format, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("fprintf")
+   DECL_VARS()
+   GET_START_TIME()
    va_list args;
    va_start(args, format);
-   int rc = orig_vfprintf(stream, format, args);
+   const ssize_t bytes_written = orig_vfprintf(stream, format, args);
    va_end(args);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL);
+   GET_END_TIME()
+
+   ssize_t record_bytes_written;
+
+   if (bytes_written >= 0) {
+      error_code = 0;
+      record_bytes_written = bytes_written;
+   } else {
+      error_code = -1;
+      record_bytes_written = 0;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, record_bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -795,11 +932,25 @@ int vfprintf(FILE* stream, const char* format, va_list ap)
 {
    CHECK_LOADED_FNS()
    PUTS("vfprintf")
-   int rc = orig_vfprintf(stream, format, ap);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_written = orig_vfprintf(stream, format, ap);
+   GET_END_TIME()
+
+   ssize_t record_bytes_written;
+
+   if (bytes_written >= 0) {
+      error_code = 0;
+      record_bytes_written = bytes_written;
+   } else {
+      error_code = -1;
+      record_bytes_written = 0;
    }
-   return rc;
+
+   record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, record_bytes_written);
+
+   return bytes_written;
 }
 
 //*****************************************************************************
@@ -808,10 +959,20 @@ size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream)
 {
    CHECK_LOADED_FNS()
    PUTS("fwrite")
-   size_t rc = orig_fwrite(ptr, size, nmemb, stream);
-   if (rc > 0) {
-      record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const size_t rc = orig_fwrite(ptr, size, nmemb, stream);
+   GET_END_TIME()
+
+   if (rc < nmemb) {
+      error_code = 1;
    }
+
+   // our recording of 0 bytes here is not accurate, however we don't
+   // have an easy way of knowing how many bytes were converted.
+   record(FILE_WRITE, WRITE, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, rc * nmemb);
+
    return rc;
 }
 
@@ -821,11 +982,19 @@ ssize_t read(int fd, void* buf, size_t count)
 {
    CHECK_LOADED_FNS()
    PUTS("read")
-   ssize_t rc = orig_read(fd, buf, count);
-   if (rc > 0) {
-      record(FILE_READ, READ, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_read(fd, buf, count);
+   GET_END_TIME()
+
+   if (bytes_read < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_READ, READ, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -834,11 +1003,19 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset)
 {
    CHECK_LOADED_FNS()
    PUTS("pread")
-   ssize_t rc = orig_pread(fd, buf, count, offset);
-   if (rc > 0) {
-      record(FILE_READ, READ, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_pread(fd, buf, count, offset);
+   GET_END_TIME()
+
+   if (bytes_read < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_READ, READ, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -847,11 +1024,19 @@ ssize_t readv(int fd, const struct iovec* iov, int iovcnt)
 {
    CHECK_LOADED_FNS()
    PUTS("readv")
-   ssize_t rc = orig_readv(fd, iov, iovcnt);
-   if (rc > 0) {
-      record(FILE_READ, READ, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_readv(fd, iov, iovcnt);
+   GET_END_TIME()
+
+   if (bytes_read < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_READ, READ, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -860,11 +1045,19 @@ ssize_t preadv(int fd, const struct iovec* iov, int iovcnt, off_t offset)
 {
    CHECK_LOADED_FNS()
    PUTS("preadv")
-   ssize_t rc = orig_preadv(fd, iov, iovcnt, offset);
-   if (rc > 0) {
-      record(FILE_READ, READ, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_preadv(fd, iov, iovcnt, offset);
+   GET_END_TIME()
+
+   if (bytes_read < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(FILE_READ, READ, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -873,11 +1066,21 @@ size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream)
 {
    CHECK_LOADED_FNS()
    PUTS("fread")
-   size_t rc = orig_fread(ptr, size, nmemb, stream);
-   if (rc > 0) {
-      record(FILE_READ, READ, fileno(stream), NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const size_t items_read = orig_fread(ptr, size, nmemb, stream);
+   GET_END_TIME()
+
+   if (items_read < nmemb) {
+      if (ferror(stream)) {
+         error_code = 1;
+      }
    }
-   return rc;
+
+   record(FILE_READ, READ, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, items_read * size);
+
+   return items_read;
 }
 
 //*****************************************************************************
@@ -886,13 +1089,23 @@ int fscanf(FILE* stream, const char* format, ...)
 {
    CHECK_LOADED_FNS()
    PUTS("fscanf")
+   DECL_VARS()
+   GET_START_TIME()
    va_list args;
    va_start(args, format);
-   int rc = orig_vfscanf(stream, format, args);
+   const int rc = orig_vfscanf(stream, format, args);
    va_end(args);
-   if (rc > 0) {
-      record(FILE_READ, READ, fileno(stream), NULL, NULL);
+   GET_END_TIME()
+
+   if (rc == EOF) {
+      error_code = errno;
    }
+
+   // our recording of 0 bytes here is not accurate, however we don't
+   // have an easy way of knowing how many bytes were converted.
+   record(FILE_READ, READ, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -902,10 +1115,20 @@ int vfscanf(FILE* stream, const char* format, va_list ap)
 {
    CHECK_LOADED_FNS()
    PUTS("vfscanf")
-   int rc = orig_vfscanf(stream, format, ap);
-   if (rc > 0) {
-      record(FILE_READ, READ, fileno(stream), NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_vfscanf(stream, format, ap);
+   GET_END_TIME()
+
+   if (rc == EOF) {
+      error_code = errno;
    }
+
+   // our recording of 0 bytes here is not accurate, however we don't
+   // have an easy way of knowing how many bytes were converted.
+   record(FILE_READ, READ, fileno(stream), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -915,10 +1138,18 @@ int fsync(int fd)
 {
    CHECK_LOADED_FNS()
    PUTS("fsync")
-   int rc = orig_fsync(fd);
-   if (0 == rc) {
-      record(SYNCS, SYNC, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fsync(fd);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(SYNCS, SYNC, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -928,10 +1159,18 @@ int fdatasync(int fd)
 {
    CHECK_LOADED_FNS()
    PUTS("fdatasync")
-   int rc = orig_fdatasync(fd);
-   if (0 == rc) {
-      record(SYNCS, SYNC, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fdatasync(fd);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(SYNCS, SYNC, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -941,8 +1180,12 @@ void sync()
 {
    CHECK_LOADED_FNS()
    PUTS("sync")
+   DECL_VARS()
+   GET_START_TIME()
    sync();
-   record(SYNCS, SYNC, FD_NONE, NULL, NULL);
+   GET_END_TIME()
+   record(SYNCS, SYNC, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), 0, ZERO_BYTES);
 }
 
 //*****************************************************************************
@@ -951,10 +1194,18 @@ int syncfs(int fd)
 {
    CHECK_LOADED_FNS()
    PUTS("syncfs")
-   int rc = syncfs(fd);
-   if (rc == 0) {
-      record(SYNCS, SYNC, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = syncfs(fd);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(SYNCS, SYNC, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -968,10 +1219,18 @@ int setxattr(const char* path,
 {
    CHECK_LOADED_FNS()
    PUTS("setxattr")
-   int rc = orig_setxattr(path, name, value, size, flags);
-   if (0 == rc) {
-      record(XATTRS, SETXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_setxattr(path, name, value, size, flags);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, SETXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, size);
+
    return rc;
 }
 
@@ -985,10 +1244,18 @@ int lsetxattr(const char* path,
 {
    CHECK_LOADED_FNS()
    PUTS("lsetxattr")
-   int rc = orig_lsetxattr(path, name, value, size, flags);
-   if (0 == rc) {
-      record(XATTRS, SETXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_lsetxattr(path, name, value, size, flags);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, SETXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, size);
+
    return rc;
 }
 
@@ -1002,10 +1269,18 @@ int fsetxattr(int fd,
 {
    CHECK_LOADED_FNS()
    PUTS("fsetxattr")
-   int rc = orig_fsetxattr(fd, name, value, size, flags);
-   if (0 == rc) {
-      record(XATTRS, SETXATTR, fd, name, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fsetxattr(fd, name, value, size, flags);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, SETXATTR, fd, name, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, size);
+
    return rc;
 }
 
@@ -1015,11 +1290,21 @@ ssize_t getxattr(const char* path, const char* name, void* value, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("getxattr")
-   ssize_t rc = orig_getxattr(path, name, value, size);
-   if (rc > 0) {
-      record(XATTRS, GETXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_getxattr(path, name, value, size);
+   GET_END_TIME()
+   ssize_t recorded_bytes_read = bytes_read;
+
+   if (bytes_read == -1) {
+      error_code = errno;
+      recorded_bytes_read = 0;
    }
-   return rc;
+
+   record(XATTRS, GETXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, recorded_bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -1028,11 +1313,22 @@ ssize_t lgetxattr(const char* path, const char* name, void* value, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("lgetxattr")
-   ssize_t rc = orig_lgetxattr(path, name, value, size);
-   if (rc > 0) {
-      record(XATTRS, GETXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_lgetxattr(path, name, value, size);
+   GET_END_TIME()
+
+   ssize_t recorded_bytes_read = bytes_read;
+
+   if (bytes_read == -1) {
+      error_code = errno;
+      recorded_bytes_read = 0;
    }
-   return rc;
+
+   record(XATTRS, GETXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, recorded_bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -1041,11 +1337,22 @@ ssize_t fgetxattr(int fd, const char* name, void* value, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("fgetxattr")
-   ssize_t rc = orig_fgetxattr(fd, name, value, size);
-   if (rc > 0) {
-      record(XATTRS, GETXATTR, fd, name, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t bytes_read = orig_fgetxattr(fd, name, value, size);
+   GET_END_TIME()
+
+   ssize_t recorded_bytes_read = bytes_read;
+
+   if (bytes_read == -1) {
+      error_code = errno;
+      recorded_bytes_read = 0;
    }
-   return rc;
+
+   record(XATTRS, GETXATTR, fd, name, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, recorded_bytes_read);
+
+   return bytes_read;
 }
 
 //*****************************************************************************
@@ -1054,11 +1361,19 @@ ssize_t listxattr(const char* path, char* list, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("listxattr")
-   ssize_t rc = orig_listxattr(path, list, size);
-   if (rc > 0) {
-      record(XATTRS, LISTXATTR, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t list_size = orig_listxattr(path, list, size);
+   GET_END_TIME()
+
+   if (list_size < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(XATTRS, LISTXATTR, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
+   return list_size;
 }
 
 //*****************************************************************************
@@ -1067,11 +1382,19 @@ ssize_t llistxattr(const char* path, char* list, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("llistxattr")
-   ssize_t rc = orig_llistxattr(path, list, size);
-   if (rc > 0) {
-      record(XATTRS, LISTXATTR, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t list_size = orig_llistxattr(path, list, size);
+   GET_END_TIME()
+
+   if (list_size < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(XATTRS, LISTXATTR, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
+   return list_size;
 }
 
 //*****************************************************************************
@@ -1080,11 +1403,19 @@ ssize_t flistxattr(int fd, char* list, size_t size)
 {
    CHECK_LOADED_FNS()
    PUTS("flistxattr")
-   ssize_t rc = orig_flistxattr(fd, list, size);
-   if (rc > 0) {
-      record(XATTRS, LISTXATTR, fd, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const ssize_t list_size = orig_flistxattr(fd, list, size);
+   GET_END_TIME()
+
+   if (list_size < 0) {
+      error_code = errno;
    }
-   return rc;
+
+   record(XATTRS, LISTXATTR, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
+   return list_size;
 }
 
 //*****************************************************************************
@@ -1093,10 +1424,18 @@ int removexattr(const char* path, const char* name)
 {
    CHECK_LOADED_FNS()
    PUTS("removexattr")
-   int rc = orig_removexattr(path, name);
-   if (0 == rc) {
-      record(XATTRS, REMOVEXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_removexattr(path, name);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, REMOVEXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1106,10 +1445,18 @@ int lremovexattr(const char* path, const char* name)
 {
    CHECK_LOADED_FNS()
    PUTS("lremovexattr")
-   int rc = orig_lremovexattr(path, name);
-   if (0 == rc) {
-      record(XATTRS, REMOVEXATTR, FD_NONE, path, name);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_lremovexattr(path, name);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, REMOVEXATTR, FD_NONE, path, name,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1119,10 +1466,18 @@ int fremovexattr(int fd, const char* name)
 {
    CHECK_LOADED_FNS()
    PUTS("fremovexattr")
-   int rc = orig_fremovexattr(fd, name);
-   if (0 == rc) {
-      record(XATTRS, REMOVEXATTR, fd, name, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fremovexattr(fd, name);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(XATTRS, REMOVEXATTR, fd, name, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1134,10 +1489,18 @@ int mount(const char* source, const char* target,
 {
    CHECK_LOADED_FNS()
    PUTS("mount")
-   int rc = orig_mount(source, target, filesystemtype, mountflags, data);
-   if (0 == rc) {
-      record(FILE_SYSTEMS, MOUNT, FD_NONE, source, target);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_mount(source, target, filesystemtype, mountflags, data);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_SYSTEMS, MOUNT, FD_NONE, source, target,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1147,10 +1510,18 @@ int umount(const char* target)
 {
    CHECK_LOADED_FNS()
    PUTS("umount")
-   int rc = orig_umount(target);
-   if (0 == rc) {
-      record(FILE_SYSTEMS, UMOUNT, FD_NONE, target, NULL); 
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_umount(target);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_SYSTEMS, UMOUNT, FD_NONE, target, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1160,10 +1531,18 @@ int umount2(const char* target, int flags)
 {
    CHECK_LOADED_FNS()
    PUTS("umount2")
-   int rc = orig_umount2(target, flags);
-   if (0 == rc) {
-      record(FILE_SYSTEMS, UMOUNT, FD_NONE, target, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_umount2(target, flags);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_SYSTEMS, UMOUNT, FD_NONE, target, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1173,12 +1552,24 @@ FILE* fopen(const char* path, const char* mode)
 {
    CHECK_LOADED_FNS()
    PUTS("fopen")
+   DECL_VARS()
+   GET_START_TIME()
    FILE* rc = orig_fopen(path, mode);
-   if (0 != rc) {
-      char* real_path = realpath(path, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
-      free(real_path);
+   GET_END_TIME()
+   int fd;
+
+   if (rc == NULL) {
+      error_code = errno;
+      fd = FD_NONE;
+   } else {
+      fd = fileno(rc);
    }
+
+   char* real_path = realpath(path, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, mode,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return rc;
 }
 
@@ -1188,12 +1579,34 @@ FILE* fopen64(const char* path, const char* mode)
 {
    CHECK_LOADED_FNS()
    PUTS("fopen64")
+   DECL_VARS()
+   GET_START_TIME()
    FILE* rc = orig_fopen64(path, mode);
-   if (0 != rc) {
-      char* real_path = realpath(path, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
+   GET_END_TIME()
+
+   if (rc == NULL) {
+      error_code = errno;
+   }
+
+   char* real_path = realpath(path, NULL);
+   const char* record_path;
+   if (real_path != NULL) {
+      record_path = real_path;
+   } else {
+      record_path = path;
+   }
+
+   int fd = FD_NONE;
+   if (rc != NULL) {
+      fd = fileno(rc);
+   }
+
+   record(FILE_OPEN_CLOSE, OPEN, fd, record_path, mode,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   if (real_path != NULL) {
       free(real_path);
    }
+
    return rc;
 }
 
@@ -1203,12 +1616,24 @@ FILE* _IO_new_fopen(const char* path, const char* mode)
 {
    CHECK_LOADED_FNS()
    PUTS("_IO_new_fopen")
+   DECL_VARS()
+   GET_START_TIME()
    FILE* rc = orig_fopen(path, mode);
-   if (0 != rc) {
-      char* real_path = realpath(path, NULL);
-      record(FILE_OPEN_CLOSE, OPEN, fileno(rc), real_path, mode);
-      free(real_path);
+   GET_END_TIME()
+   int fd;
+
+   if (rc == NULL) {
+      error_code = errno;
+      fd = FD_NONE;
+   } else {
+      fd = fileno(rc);
    }
+
+   char* real_path = realpath(path, NULL);
+   record(FILE_OPEN_CLOSE, OPEN, fd, real_path, mode,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
    return rc;
 }
 
@@ -1218,10 +1643,18 @@ int fflush(FILE* fp)
 {
    CHECK_LOADED_FNS()
    PUTS("fflush")
-   int rc = orig_fflush(fp);
-   if (rc == 0) {
-      record(SYNCS, FLUSH, fileno(fp), NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fflush(fp);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(SYNCS, FLUSH, fileno(fp), NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1231,10 +1664,18 @@ DIR* opendir(const char *name)
 {
    CHECK_LOADED_FNS()
    PUTS("opendir")
+   DECL_VARS()
+   GET_START_TIME()
    DIR* rc = orig_opendir(name);
-   if (rc != NULL) {
-      record(DIR_METADATA, OPENDIR, FD_NONE, name, NULL);
+   GET_END_TIME()
+
+   if (rc == NULL) {
+      error_code = errno;
    }
+
+   record(DIR_METADATA, OPENDIR, FD_NONE, name, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1244,10 +1685,18 @@ DIR* fdopendir(int fd)
 {
    CHECK_LOADED_FNS()
    PUTS("fdopendir")
+   DECL_VARS()
+   GET_START_TIME()
    DIR* rc = orig_fdopendir(fd);
-   if (rc != NULL) {
-      record(DIR_METADATA, OPENDIR, fd, NULL, NULL);
+   GET_END_TIME()
+
+   if (rc == NULL) {
+      error_code = errno;
    }
+
+   record(DIR_METADATA, OPENDIR, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1257,10 +1706,18 @@ int closedir(DIR* dirp)
 {
    CHECK_LOADED_FNS()
    PUTS("closedir")
-   int rc = orig_closedir(dirp);
-   if (rc == 0) {
-      record(DIR_METADATA, CLOSEDIR, FD_NONE, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_closedir(dirp);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(DIR_METADATA, CLOSEDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1270,10 +1727,18 @@ struct dirent* readdir(DIR* dirp)
 {
    CHECK_LOADED_FNS()
    PUTS("readdir")
+   DECL_VARS()
+   GET_START_TIME()
    struct dirent* rc = orig_readdir(dirp);
-   if (rc != NULL) {
-      record(DIR_METADATA, READDIR, FD_NONE, NULL, NULL);
+   GET_END_TIME()
+
+   if (rc == NULL) {
+      error_code = errno;
    }
+
+   record(DIR_METADATA, READDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1283,10 +1748,14 @@ int readdir_r(DIR* dirp, struct dirent* entry, struct dirent** result)
 {
    CHECK_LOADED_FNS()
    PUTS("readdir_r")
-   int rc = orig_readdir_r(dirp, entry, result);
-   if (rc == 0) {
-      record(DIR_METADATA, READDIR, FD_NONE, NULL, NULL);
-   }
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_readdir_r(dirp, entry, result);
+   GET_END_TIME()
+
+   record(DIR_METADATA, READDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), rc, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1296,10 +1765,18 @@ int dirfd(DIR* dirp)
 {
    CHECK_LOADED_FNS()
    PUTS("dirfd")
-   int rc = orig_dirfd(dirp);
-   if (rc > -1) {
-      record(DIR_METADATA, DIRFD, FD_NONE, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_dirfd(dirp);
+   GET_END_TIME()
+
+   if (rc < 0) {
+      error_code = errno;
    }
+
+   record(DIR_METADATA, DIRFD, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1309,8 +1786,12 @@ void rewinddir(DIR* dirp)
 {
    CHECK_LOADED_FNS()
    PUTS("rewinddir")
+   DECL_VARS()
+   GET_START_TIME()
    orig_rewinddir(dirp);
-   record(DIR_METADATA, REWINDDIR, FD_NONE, NULL, NULL);
+   GET_END_TIME()
+   record(DIR_METADATA, REWINDDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), 0, ZERO_BYTES);
 }
 
 //*****************************************************************************
@@ -1319,8 +1800,12 @@ void seekdir(DIR* dirp, long loc)
 {
    CHECK_LOADED_FNS()
    PUTS("seekdir")
+   DECL_VARS()
+   GET_START_TIME()
    orig_seekdir(dirp, loc);
-   record(DIR_METADATA, SEEKDIR, FD_NONE, NULL, NULL);
+   GET_END_TIME()
+   record(DIR_METADATA, SEEKDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), 0, ZERO_BYTES);
 }
 
 //*****************************************************************************
@@ -1329,11 +1814,19 @@ long telldir(DIR* dirp)
 {
    CHECK_LOADED_FNS()
    PUTS("telldir")
-   long rc = orig_telldir(dirp);
-   if (rc > -1L) {
-      record(DIR_METADATA, TELLDIR, FD_NONE, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const long loc = orig_telldir(dirp);
+   GET_END_TIME()
+
+   if (loc < 0L) {
+      error_code = errno;
    }
-   return rc;
+
+   record(DIR_METADATA, TELLDIR, FD_NONE, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
+   return loc;
 }
 
 //*****************************************************************************
@@ -1342,10 +1835,18 @@ int fstat(int fildes, struct stat* buf)
 {
    CHECK_LOADED_FNS()
    PUTS("fstat")
-   int rc = orig_fstat(fildes, buf);
-   if (rc == 0) {
-      record(FILE_METADATA, STAT, fildes, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fstat(fildes, buf);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, STAT, fildes, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1355,10 +1856,18 @@ int lstat(const char* path, struct stat* buf)
 {
    CHECK_LOADED_FNS()
    PUTS("lstat")
-   int rc = orig_lstat(path, buf);
-   if (rc == 0) {
-      record(FILE_METADATA, STAT, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_lstat(path, buf);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, STAT, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1368,10 +1877,18 @@ int stat(const char* path, struct stat* buf)
 {
    CHECK_LOADED_FNS()
    PUTS("stat")
-   int rc = orig_stat(path, buf);
-   if (rc == 0) {
-      record(FILE_METADATA, STAT, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_stat(path, buf);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, STAT, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1381,10 +1898,18 @@ int access(const char* path, int amode)
 {
    CHECK_LOADED_FNS()
    PUTS("access")
-   int rc = orig_access(path, amode);
-   if (rc == 0) {
-      record(FILE_METADATA, ACCESS, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_access(path, amode);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, ACCESS, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1394,10 +1919,18 @@ int faccessat(int fd, const char* path, int mode, int flag)
 {
    CHECK_LOADED_FNS()
    PUTS("faccessat")
-   int rc = orig_faccessat(fd, path, mode, flag);
-   if (rc == 0) {
-      record(FILE_METADATA, ACCESS, fd, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_faccessat(fd, path, mode, flag);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, ACCESS, fd, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1407,10 +1940,18 @@ int chmod(const char* path, mode_t mode)
 {
    CHECK_LOADED_FNS()
    PUTS("chmod")
-   int rc = orig_chmod(path, mode);
-   if (rc == 0) {
-      record(FILE_METADATA, CHMOD, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_chmod(path, mode);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHMOD, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1420,10 +1961,18 @@ int fchmod(int fildes, mode_t mode)
 {
    CHECK_LOADED_FNS()
    PUTS("fchmod")
-   int rc = orig_fchmod(fildes, mode);
-   if (rc == 0) {
-      record(FILE_METADATA, CHMOD, fildes, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fchmod(fildes, mode);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHMOD, fildes, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1433,10 +1982,18 @@ int fchmodat(int fd, const char* path, mode_t mode, int flag)
 {
    CHECK_LOADED_FNS()
    PUTS("fchmodat")
-   int rc = orig_fchmodat(fd, path, mode, flag);
-   if (rc == 0) {
-      record(FILE_METADATA, CHMOD, fd, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fchmodat(fd, path, mode, flag);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHMOD, fd, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1446,10 +2003,18 @@ int chown(const char* path, uid_t owner, gid_t group)
 {
    CHECK_LOADED_FNS()
    PUTS("chown")
-   int rc = orig_chown(path, owner, group);
-   if (rc == 0) {
-      record(FILE_METADATA, CHOWN, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_chown(path, owner, group);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHOWN, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1459,10 +2024,18 @@ int fchown(int fildes, uid_t owner, gid_t group)
 {  
    CHECK_LOADED_FNS()
    PUTS("fchown")
-   int rc = orig_fchown(fildes, owner, group);
-   if (rc == 0) {
-      record(FILE_METADATA, CHOWN, fildes, NULL, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fchown(fildes, owner, group);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHOWN, fildes, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1472,10 +2045,18 @@ int lchown(const char* path, uid_t owner, gid_t group)
 {  
    CHECK_LOADED_FNS()
    PUTS("lchown")
-   int rc = orig_lchown(path, owner, group);
-   if (rc == 0) {
-      record(FILE_METADATA, CHOWN, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_lchown(path, owner, group);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHOWN, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1485,10 +2066,18 @@ int fchownat(int fd, const char* path, uid_t owner, gid_t group, int flag)
 {  
    CHECK_LOADED_FNS()
    PUTS("fchownat")
-   int rc = orig_fchownat(fd, path, owner, group, flag);
-   if (rc == 0) {
-      record(FILE_METADATA, CHOWN, fd, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_fchownat(fd, path, owner, group, flag);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, CHOWN, fd, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
@@ -1498,10 +2087,18 @@ int utime(const char* path, const struct utimbuf* times)
 {
    CHECK_LOADED_FNS()
    PUTS("utime")
-   int rc = orig_utime(path, times);
-   if (rc == 0) {
-      record(FILE_METADATA, UTIME, FD_NONE, path, NULL);
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_utime(path, times);
+   GET_END_TIME()
+
+   if (rc != 0) {
+      error_code = errno;
    }
+
+   record(FILE_METADATA, UTIME, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
    return rc;
 }
 
