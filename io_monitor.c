@@ -64,13 +64,7 @@
 
 
 // TODO and enhancements
-// - allow to be started in 'paused' mode (eliminate startup noise; e.g., python)
-//     maybe use x seconds time delay
 // - change (or at least support) some other IPC mechanism other than TCP sockets
-// - add more fields in metrics payload:
-//      -- error code/errno
-//      -- elapsed time (nanoseconds or microseconds)
-//      -- number bytes transferred (read/write)
 // - consider adding a way to filter here (inclusive or exclusive)
 // - implement missing intercept calls (FILE_SPACE, PROCESSES, etc.)
 // - find a better name/grouping for MISC
@@ -101,6 +95,7 @@ static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
 static const int FD_NONE = -1;
 static const char* FACILITY_ID = "FACILITY_ID";
+static const char* START_ON_OPEN = "START_ON_OPEN";
 static int failed_socket_connections = 0;
 static const ssize_t ZERO_BYTES = 0L;
 
@@ -176,8 +171,8 @@ typedef enum {
 
 
 // a debugging aid that we can easily turn off/on
-#define PUTS(s) \
-puts(s);
+#define PUTS(s)
+//puts(s);
 
 //***********  initialization  ***********
 void initialize_monitor();
@@ -325,7 +320,9 @@ typedef int (*orig_utime_f_type)(const char* path, const struct utimbuf* times);
 
 // unique identifier to know originator of metrics. defaults to 'u' (unspecified)
 static char facility[5];
+static const char* start_on_open = NULL;
 static int socket_fd = -1;
+static int paused = 0;
 
 // open/close
 static orig_open_f_type orig_open = NULL;
@@ -434,6 +431,11 @@ __attribute__((destructor))  void fini() {
 void load_library_functions() {
    if (NULL != orig_open) {
       return;
+   }
+
+   start_on_open = getenv(START_ON_OPEN);
+   if (start_on_open != NULL) {
+      paused = 1;
    }
 
    // open/close
@@ -584,6 +586,14 @@ void record(DOMAIN_TYPE dom_type,
          // ignore open of parent directory
          return;
       }
+
+      if (paused && (strstr(s1, start_on_open) != NULL)) {
+         paused = 0;
+      }
+   }
+
+   if (paused) {
+      return;
    }
 
    // sec to msec
