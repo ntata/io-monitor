@@ -5,6 +5,10 @@ to capture/intercept many C library calls for the purpose of
 getting real-time metrics without having to change any existing
 source code.
 
+The preferred IPC mechanism is Unix SysV message queues. To make
+use of these queues, set environment variable MESSAGE_QUEUE_PATH
+to an existing file where user has permissions for writing.
+
 Currently the captured metrics are formatted into a comma-separated
 string as follows:
 
@@ -29,9 +33,9 @@ abcd,1487975251,0.305000,28049,13,0,0,3,0,/home/paul/foo/bar.txt,wt
     s2 = "wt" (optional; context-dependent)
 
 The formatted string of metrics is then transferred via IPC to
-another process. Currently this IPC mechanism is TCP sockets
-on localhost. The use of TCP sockets is meant to be a temporary
-solution.
+another process. Currently this IPC mechanism is either Unix
+SysV message queues or TCP sockets on localhost. Message queues
+are preferred.
 
 In some cases, there may be a great deal of unwanted captures that
 occur when process is first started. An example would be running

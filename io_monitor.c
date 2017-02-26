@@ -64,7 +64,6 @@
 
 
 // TODO and enhancements
-// - change (or at least support) some other IPC mechanism other than TCP sockets
 // - consider adding a way to filter here (inclusive or exclusive)
 // - implement missing intercept calls (FILE_SPACE, PROCESSES, etc.)
 // - find a better name/grouping for MISC
@@ -90,14 +89,26 @@ gettimeofday(&end_time, NULL);
 #define TIME_AFTER() \
 &end_time
 
+typedef struct _MONITOR_MESSAGE
+{
+   long message_type;
+   char monitor_record[256];
+} MONITOR_MESSAGE;
 
 static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
 static const int FD_NONE = -1;
+static const int MQ_KEY_NONE = -1;
 static const char* FACILITY_ID = "FACILITY_ID";
+static const char* MESSAGE_QUEUE_PATH = "MESSAGE_QUEUE_PATH";
 static const char* START_ON_OPEN = "START_ON_OPEN";
 static int failed_socket_connections = 0;
+static int failed_ipc_sends = 0;
 static const ssize_t ZERO_BYTES = 0L;
+static const char* message_queue_path = NULL;
+static const int message_project_id = 'm';
+static key_t message_queue_key = -1;
+static int message_queue_id = -1;
 
 
 // set up some categories to group metrics
@@ -176,6 +187,10 @@ typedef enum {
 
 //***********  initialization  ***********
 void initialize_monitor();
+
+//***********  IPC mechanisms  ***********
+int send_tcp_socket(const char* monitor_record);
+int send_msg_queue(const char* monitor_record);
 
 //***********  monitoring mechanism  ***********
 void record(DOMAIN_TYPE dom_type,
@@ -522,6 +537,7 @@ void load_library_functions() {
 //*****************************************************************************
 
 void initialize_monitor() {
+   // establish facility id
    memset(facility, 0, sizeof(facility));
    const char* facility_id = getenv(FACILITY_ID);
    if (facility_id != NULL) {
@@ -529,7 +545,113 @@ void initialize_monitor() {
    } else {
       facility[0] = 'u';  // unspecified
    }
+
+   message_queue_path = getenv(MESSAGE_QUEUE_PATH);
+
    load_library_functions();
+}
+
+//*****************************************************************************
+
+int send_msg_queue(const char* monitor_record)
+{
+   MONITOR_MESSAGE monitor_message;
+
+   if (message_queue_key == MQ_KEY_NONE) {
+      if (message_queue_path != NULL) {
+         message_queue_key = ftok(message_queue_path, message_project_id);
+         if (message_queue_key != -1) {
+            message_queue_id = msgget(message_queue_key, 0600 | IPC_CREAT);
+         }
+      }
+   }
+
+   if (message_queue_id == MQ_KEY_NONE) {
+      PUTS("no message queue available")
+      return -1;
+   }
+
+   memset(&monitor_message, 0, sizeof(MONITOR_MESSAGE));
+   monitor_message.message_type = 1L;
+   strcpy(monitor_message.monitor_record, monitor_record);
+
+   return msgsnd(message_queue_id,
+                 &monitor_message,
+                 256,
+                 IPC_NOWAIT);
+}
+
+//*****************************************************************************
+
+int send_tcp_socket(const char* monitor_record)
+{
+   int rc;
+   int record_length;
+   int sockfd;
+   int port;
+   char msg_size_header[10];
+   struct sockaddr_in server;
+
+   // set up a 10 byte header that includes the size (in bytes)
+   // of our payload since sockets don't include any built-in
+   // message boundaries
+   record_length = strlen(monitor_record);
+   memset(msg_size_header, 0, 10);
+   snprintf(msg_size_header, 10, "%d", record_length);
+
+   // we're using TCP sockets here to throw the record over the wall
+   // to another process on same machine. TCP sockets is probably
+   // not the best IPC mechanism for this purpose, but this is
+   // handy to get started.
+   sockfd = socket(AF_INET, SOCK_STREAM, 0);
+   if (sockfd > 0) {
+      port = SOCKET_PORT;
+
+      // we DO NOT want to send anything remotely.
+      // we are in the middle of the data path, so we need to
+      // keep any induced latency to absolute minimum.
+      server.sin_addr.s_addr = inet_addr("127.0.0.1");
+      server.sin_family = AF_INET;
+      server.sin_port = htons(port);
+      socket_fd = sockfd;
+
+      rc = connect(sockfd,
+                   (struct sockaddr*) &server,
+                   sizeof(server));
+      if (rc == 0) {
+         int one = 1;
+         int send_buffer_size = 256;
+         setsockopt(sockfd, SOL_TCP, TCP_NODELAY, &one, sizeof(one));
+         setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF,
+                    &send_buffer_size, sizeof(send_buffer_size));
+         rc = write(sockfd, msg_size_header, 10);
+         if (10 == rc) {
+            rc = write(sockfd, monitor_record, record_length);
+            if (record_length == rc) {
+               rc = 0;
+            } else {
+               //printf("expected to write %d bytes, actual=%d\n",
+               //       record_length, rc);
+               rc = -1;
+            }
+         } else {
+            //printf("header expected to write %d bytes, actual=%d\n", 10, rc);
+            rc = -1;
+         }
+         //shutdown(sockfd, SHUT_RDWR);
+      } else {
+         // we're not able to reach our IPC peer. however, we're just a
+         // thin shim used to intercept C library calls. we can't cause
+         // the real process/application to crash or malfunction. the
+         // show must go on...
+         failed_socket_connections++;
+         rc = -1;
+      }
+      close(sockfd);
+      socket_fd = FD_NONE;
+   }
+
+   return rc;
 }
 
 //*****************************************************************************
@@ -544,13 +666,9 @@ void record(DOMAIN_TYPE dom_type,
             int error_code,
             ssize_t bytes_transferred)
 {
-   char msg_size_header[10];
    char record_output[256];
    unsigned long timestamp;
-   int sockfd;
-   int port;
-   int rc;
-   struct sockaddr_in server;
+   int rc_ipc;
    int record_length;
    pid_t pid;
    double elapsed_time;
@@ -630,60 +748,15 @@ void record(DOMAIN_TYPE dom_type,
                bytes_transferred);
    }
 
-   // set up a 10 byte header that includes the size (in bytes)
-   // of our payload since sockets don't include any built-in
-   // message boundaries
-   record_length = strlen(record_output);
-   memset(msg_size_header, 0, 10);
-   snprintf(msg_size_header, 10, "%d", record_length);
+   if (message_queue_path != NULL) {
+      rc_ipc = send_msg_queue(record_output);
+   } else {
+      rc_ipc = send_tcp_socket(record_output);
+   }
 
-   // we're using TCP sockets here to throw the record over the wall
-   // to another process on same machine. TCP sockets is probably
-   // not the best IPC mechanism for this purpose, but this is
-   // handy to get started.
-   sockfd = socket(AF_INET, SOCK_STREAM, 0);
-   if (sockfd > 0) {
-      port = SOCKET_PORT;
-
-      // we DO NOT want to send anything remotely.
-      // we are in the middle of the data path, so we need to
-      // keep any induced latency to absolute minimum.
-      server.sin_addr.s_addr = inet_addr("127.0.0.1");
-      server.sin_family = AF_INET;
-      server.sin_port = htons(port);
-      socket_fd = sockfd;
-
-      rc = connect(sockfd,
-                   (struct sockaddr*) &server,
-                   sizeof(server));
-      if (rc == 0) {
-         int one = 1;
-         int send_buffer_size = 256;
-         setsockopt(sockfd, SOL_TCP, TCP_NODELAY, &one, sizeof(one));
-         setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF,
-                    &send_buffer_size, sizeof(send_buffer_size));
-         rc = write(sockfd, msg_size_header, 10);
-         if (10 == rc) {
-            rc = write(sockfd, record_output, record_length);
-            if (record_length == rc) {
-               read(sockfd, record_output, sizeof(record_output)-1);
-            } else {
-               //printf("expected to write %d bytes, actual=%d\n",
-               //       record_length, rc);
-            }
-         } else {
-            //printf("header expected to write %d bytes, actual=%d\n", 10, rc);
-         }
-         //shutdown(sockfd, SHUT_RDWR);
-      } else {
-         // we're not able to reach our IPC peer. however, we're just a
-         // thin shim used to intercept C library calls. we can't cause
-         // the real process/application to crash or malfunction. the
-         // show must go on...
-         failed_socket_connections++;
-      }
-      close(sockfd);
-      socket_fd = FD_NONE;
+   if (rc_ipc != 0) {
+      PUTS("io_monitor.c ipc send failed")
+      failed_ipc_sends++;
    }
 }
 
