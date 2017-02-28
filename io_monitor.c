@@ -57,7 +57,7 @@
 // gcc -shared -fPIC io_monitor.c -o io_monitor.so -ldl
 //
 // to use:
-// LD_LIBRARY=io_monitor.so ; my-process-to-monitor
+// LD_PRELOAD=io_monitor.so ; my-process-to-monitor
 //
 // Also need socket server on other side of IPC to receive
 // the metrics
