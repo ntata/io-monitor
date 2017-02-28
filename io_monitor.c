@@ -168,8 +168,8 @@ typedef enum {
    SOCKET,         // 30  (SOCKETS)
    _IO_NEW_FOPEN,  // 31  (FILE_OPEN_CLOSE)
    FLUSH,          // 32  (SYNCS)
-   FALLOCATE,      // 33  (FILE_SPACE)
-   FTRUNCATE,      // 34  (FILE_SPACE)
+   ALLOCATE,       // 33  (FILE_SPACE)
+   TRUNCATE,       // 34  (FILE_SPACE)
    OPENDIR,        // 35  (DIR_METADATA)
    CLOSEDIR,       // 36  (DIR_METADATA)
    READDIR,        // 37  (DIR_METADATA)
@@ -332,6 +332,14 @@ typedef int (*orig_fchownat_f_type)(int fd, const char* path, uid_t owner,
 
 typedef int (*orig_utime_f_type)(const char* path, const struct utimbuf* times);
 
+// allocate
+typedef int (*orig_posix_fallocate_f_type)(int fd, off_t offset, off_t len);
+typedef int (*orig_fallocate_f_type)(int fd, int mode, off_t offset, off_t len);
+
+// truncate
+typedef int (*orig_truncate_f_type)(const char* path, off_t length);
+typedef int (*orig_ftruncate_f_type)(int fd, off_t length);
+
 
 // unique identifier to know originator of metrics. defaults to 'u' (unspecified)
 static char facility[5];
@@ -419,6 +427,13 @@ static orig_lchown_f_type orig_lchown = NULL;
 static orig_fchownat_f_type orig_fchownat = NULL;
 static orig_utime_f_type orig_utime = NULL;
 
+// allocate
+static orig_posix_fallocate_f_type orig_posix_fallocate = NULL;
+static orig_fallocate_f_type orig_fallocate = NULL;
+
+// truncate
+static orig_truncate_f_type orig_truncate = NULL;
+static orig_ftruncate_f_type orig_ftruncate = NULL;
 
 
 void load_library_functions();
@@ -532,6 +547,14 @@ void load_library_functions() {
    orig_lchown = (orig_lchown_f_type)dlsym(RTLD_NEXT,"lchown");
    orig_fchownat = (orig_fchownat_f_type)dlsym(RTLD_NEXT,"fchownat");
    orig_utime = (orig_utime_f_type)dlsym(RTLD_NEXT,"utime");
+
+   // allocate
+   orig_posix_fallocate = (orig_posix_fallocate_f_type)dlsym(RTLD_NEXT,"posix_fallocate");
+   orig_fallocate = (orig_fallocate_f_type)dlsym(RTLD_NEXT,"fallocate");
+
+   // truncate
+   orig_truncate = (orig_truncate_f_type)dlsym(RTLD_NEXT,"truncate");
+   orig_ftruncate = (orig_ftruncate_f_type)dlsym(RTLD_NEXT,"ftruncate");
 }
 
 //*****************************************************************************
@@ -2181,6 +2204,109 @@ int utime(const char* path, const struct utimbuf* times)
 
    record(FILE_METADATA, UTIME, FD_NONE, path, NULL,
           TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+
+   return rc;
+}
+
+//*****************************************************************************
+
+int posix_fallocate(int fd, off_t offset, off_t len)
+{
+   CHECK_LOADED_FNS()
+   PUTS("posix_fallocate")
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_posix_fallocate(fd, offset, len);
+   GET_END_TIME()
+   ssize_t bytes_written;
+
+   // according to man page, errno is NOT set on error!
+   if (rc == 0) {
+      bytes_written = len;
+   } else {
+      bytes_written = ZERO_BYTES;
+   }
+
+   record(FILE_SPACE, ALLOCATE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), rc, bytes_written);
+
+   return rc;
+}
+
+//*****************************************************************************
+
+int fallocate(int fd, int mode, off_t offset, off_t len)
+{
+   CHECK_LOADED_FNS()
+   PUTS("ftruncate")
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_allocate(fd, mode, offset, len);
+   GET_END_TIME()
+   ssize_t bytes_written;
+
+   if (rc == 0) {
+      error_code = 0;
+      bytes_written = len;
+   } else {
+      error_code = errno;
+      bytes_written = ZERO_BYTES;
+   }
+
+   record(FILE_SPACE, ALLOCATE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
+
+   return rc;
+}
+
+//*****************************************************************************
+
+int truncate(const char* path, off_t length)
+{
+   CHECK_LOADED_FNS()
+   PUTS("truncate")
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_truncate(path, length);
+   GET_END_TIME()
+   ssize_t bytes_written;
+
+   if (rc == 0) {
+      error_code = 0;
+      bytes_written = length;
+   } else {
+      error_code = errno;
+      bytes_written = ZERO_BYTES;
+   }
+
+   record(FILE_SPACE, TRUNCATE, FD_NONE, path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), rc, bytes_written);
+
+   return rc;
+}
+
+//*****************************************************************************
+
+int ftruncate(int fd, off_t length)
+{
+   CHECK_LOADED_FNS()
+   PUTS("ftruncate")
+   DECL_VARS()
+   GET_START_TIME()
+   const int rc = orig_ftruncate(fd, length);
+   GET_END_TIME() 
+   ssize_t bytes_written;
+
+   if (rc == 0) {
+      error_code = 0;
+      bytes_written = length;
+   } else {
+      error_code = errno;
+      bytes_written = ZERO_BYTES;
+   }
+
+   record(FILE_SPACE, TRUNCATE, fd, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, bytes_written);
 
    return rc;
 }
