@@ -22,4 +22,5 @@ typedef enum {
 // domains below are associated with system events not tied directly to function calls
    START_STOP,        // 17  (associated with starting and exiting an app)
    HTTP,              // 18  (HTTP verb events)
+   END_DOMAINS        // keep this one as last
 } DOMAIN_TYPE;

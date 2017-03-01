@@ -55,6 +55,7 @@
 #include <arpa/inet.h>
 #include "ops.h"
 #include "domains.h"
+#include "domains_names.h"
 #include "mq.h"
 
 
@@ -560,43 +561,16 @@ unsigned int domain_list_to_bit_mask(const char* domain_list)
    char* token;
    char* domain_list_copy = strdup(domain_list);
    char* rest = domain_list_copy;
-
+   int i;
+   
    while ((token = strtok_r(rest, ",", &rest))) {
-      if (!strcmp(token, "LINKS")) {
-         bit_mask |= BIT_LINKS;
-      } else if (!strcmp(token, "XATTRS")) {
-         bit_mask |= BIT_XATTRS;
-      } else if (!strcmp(token, "DIRS")) {
-         bit_mask |= BIT_DIRS;
-      } else if (!strcmp(token, "FILE_SYSTEMS")) {
-         bit_mask |= BIT_FILE_SYSTEMS;
-      } else if (!strcmp(token, "FILE_DESCRIPTORS")) {
-         bit_mask |= BIT_FILE_DESCRIPTORS;
-      } else if (!strcmp(token, "SYNCS")) {
-         bit_mask |= BIT_SYNCS;
-      } else if (!strcmp(token, "SOCKETS")) {
-         bit_mask |= BIT_SOCKETS;
-      } else if (!strcmp(token, "SEEKS")) {
-         bit_mask |= BIT_SEEKS;
-      } else if (!strcmp(token, "FILE_SPACE")) {
-         bit_mask |= BIT_FILE_SPACE;
-      } else if (!strcmp(token, "PROCESSES")) {
-         bit_mask |= BIT_PROCESSES;
-      } else if (!strcmp(token, "FILE_METADATA")) {
-         bit_mask |= BIT_FILE_METADATA;
-      } else if (!strcmp(token, "FILE_WRITE")) {
-         bit_mask |= BIT_FILE_WRITE;
-      } else if (!strcmp(token, "FILE_READ")) {
-         bit_mask |= BIT_FILE_READ;
-      } else if (!strcmp(token, "FILE_OPEN_CLOSE")) {
-         bit_mask |= BIT_FILE_OPEN_CLOSE;
-      } else if (!strcmp(token, "MISC")) {
-         bit_mask |= BIT_MISC;
-      } else if (!strcmp(token, "DIR_METADATA")) {
-         bit_mask |= BIT_DIR_METADATA;
-      }
+     for (i = 0; i != END_DOMAINS; ++i) {
+       if (!strcmp(token, domains_names[i])) {
+	   bit_mask |= (1 << i);
+	   break;
+	 }
+     }
    }
-
    free(domain_list_copy);
 
    return bit_mask;
