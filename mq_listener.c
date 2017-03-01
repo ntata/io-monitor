@@ -38,8 +38,6 @@ static const int MESSAGE_QUEUE_PROJECT_ID = 'm';
 
 void print_log_entry(struct monitor_record_t *data)
 {
-
-  char *d = data;
   static int ln=0;
   if (!((ln)&3))
     puts(""); /* print extra blank line every fourth line */
@@ -52,9 +50,7 @@ void print_log_entry(struct monitor_record_t *data)
 	   "PID", "DOMAIN", "OPERATION", "ERR", "FD",
 	   "XFER", "PARM");
   }
-
-  
-  
+ 
   printf("%10s %10d %8.4f %5d %20s  %-20s %3d %5d %8zu %s %s\n",
 	 data->facility,
 	 data->timestamp,

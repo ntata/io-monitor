@@ -136,8 +136,12 @@ static unsigned int BIT_DIR_METADATA = (1 << DIR_METADATA);
 
 
 // a debugging aid that we can easily turn off/on
+#ifdef NDEBUG
+#define PUTS(s)
+#else
 #define PUTS(s) \
 puts(s);
+#endif
 
 //***********  initialization  ***********
 void initialize_monitor();
@@ -409,9 +413,14 @@ __attribute__((constructor)) void init() {
    sprintf(cmdline, "/proc/%d/cmdline", getpid());
    int fd = orig_open(cmdline, O_RDONLY);
    int len = orig_read(fd, cmdline, PATH_MAX);
-   while (--len) {
-     if (!cmdline[len])
-       cmdline[len] = ' ';
+   if (len) {
+     len--;
+     while (--len) {
+       if (!cmdline[len])
+	 cmdline[len] = ' ';
+     }
+   } else {
+     sprintf(cmdline, "could not determine path");
    }
    orig_close(fd);
    /* here retrieve actual path */

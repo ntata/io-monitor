@@ -2,7 +2,7 @@
 ifndef NDEBUG
 CFLAGS = -g
 else
-CFLAGS = -O2
+CFLAGS = -O2 -DNDEBUG
 endif
 
 headers = ops.h domains.h ops_names.h domains_names.h
