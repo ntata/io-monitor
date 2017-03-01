@@ -134,7 +134,9 @@ static unsigned int BIT_FILE_READ = (1 << FILE_READ);
 static unsigned int BIT_FILE_OPEN_CLOSE = (1 << FILE_OPEN_CLOSE);
 static unsigned int BIT_MISC = (1 << MISC);
 static unsigned int BIT_DIR_METADATA = (1 << DIR_METADATA);
-
+static unsigned int BIT_NETWORKING = (1 << NETWORKING);
+static unsigned int BIT_START_STOP = (1 << START_STOP);
+static unsigned int BIT_HTTP = (1 << HTTP);
 
 // a debugging aid that we can easily turn off/on
 #ifdef NDEBUG
