@@ -26,9 +26,13 @@
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <errno.h>
-
+#include "domains.h"
+#include "ops.h"
+#include "ops_names.h"
+#include "domains_names.h"
 
 static const int MESSAGE_QUEUE_PROJECT_ID = 'm';
+#define STR_LEN 256
 
 typedef struct _MONITOR_MESSAGE
 {
@@ -37,6 +41,58 @@ typedef struct _MONITOR_MESSAGE
 } MONITOR_MESSAGE;
 
 //*****************************************************************************
+
+void print_log_entry(char*data)
+{
+  char facility[STR_LEN];
+  int timestamp;
+  float elapsed_time;
+  int pid;
+
+  int dom_type = 0;
+  int op_type = 0;
+
+  int error_code;
+  int fd;
+  size_t bytes_transferred;
+  char s1[STR_LEN];
+  //puts(data);
+
+  char *d = data;
+  static int ln=0;
+  if (!((ln)&3))
+    puts(""); /* print extra blank line every fourth line */
+
+
+  if (!((ln++)&15)) {
+    /* print header every 16th line"*/
+    printf("%10s %10s %8s %5s %20s  %-20s %3s %5s %8s %s\n",
+	   "FACILITY", "TS.", "ELAPSED",
+	   "PID", "DOMAIN", "OPERATION", "ERR", "FD",
+	   "XFER", "PARM");
+  }
+
+  /* replace commad w spaces so that sscanf can parse string */
+  while (*d) {
+    if (*d == ',') *d=' ';
+    d++;
+  }
+
+  sscanf(data,
+	 "%s %d %f %d %d %d %d %d %zu %s" ,
+	 facility, &timestamp, &elapsed_time, &pid,
+	 &dom_type, &op_type, &error_code, &fd,
+	 &bytes_transferred, s1);
+  
+  
+  printf("%10s %10d %8.4f %5d %20s  %-20s %3d %5d %8zu %s\n",
+	 facility, timestamp, elapsed_time, pid,
+	 domains_names[dom_type], ops_names[op_type], error_code, fd,
+	 bytes_transferred, s1);
+
+}
+
+
 
 int main(int argc, char* argv[]) {
    const char* message_queue_path;
@@ -78,7 +134,7 @@ int main(int argc, char* argv[]) {
                                      0,   // long type
                                      0);  // int flag
       if (message_size_received > 0) {
-         printf("%s\n", monitor_message.monitor_record);
+         print_log_entry(monitor_message.monitor_record);
       } else {
          printf("rc = %zu\n", message_size_received);
          printf("errno = %d\n", errno);
