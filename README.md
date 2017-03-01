@@ -1,58 +1,149 @@
 # io-monitor
 
+## Overview
+
 This is a thin shim intended to be used with LD_PRELOAD in order
 to capture/intercept many C library calls for the purpose of
 getting real-time metrics without having to change any existing
-source code.
+source code. The idea is that relevant metrics should be
+captured very efficiently and then handed off to another process
+to handle.
 
-The preferred IPC mechanism is Unix SysV message queues. To make
-use of these queues, set environment variable MESSAGE_QUEUE_PATH
-to an existing file where user has permissions for writing.
+## IPC Mechanism
 
-Currently the captured metrics are formatted into a comma-separated
-string as follows:
+The preferred IPC mechanism is Unix SysV message queues. In order
+to make use of the captured metrics, you must set the environment
+variable MESSAGE_QUEUE_PATH to an existing file where user has
+permissions for writing.
 
-facility,ts,duration,pid,domain,op-type,error code,fd,bytes transferred,s1,s2
+## Identifying Metrics
 
-The facility is set through an environment variable named 'FACILITY_ID'.
-The facility identifier should have maximum of 4 characters.
+Each captured metric has an **operation type** to identify the kind
+of operation that generated the metric. In some cases, the specified
+operation is a family of functions grouped by functionality.
+For example, the 'OPEN' operation on files can be one of the
+following functions: open, open64, creat, creat64, fopen, fopen64.
 
-Example:
-abcd,1487975251,0.305000,28049,13,0,0,3,0,/home/paul/foo/bar.txt,wt
+Every operation type belongs to a **domain**. The domain is simply
+a grouping mechanism to treat a certain logically related set
+of operations as one (e.g., to enable/disable monitoring).
 
-    facility = "abcd" (facility to pinpoint "who" generated the metrics)
-    unix timestamp = "1487975251" (timestamp of operation)
-    elapsed time (ms) = "0.305000" (elapsed time in ms)
-    pid = "28049" (process id)
-    domain = "13" (see DOMAIN_TYPE in io_monitor.c)
-    operation = "0" (see OP_TYPE in io_monitor.c))
-    error code = "0" (0 = success; non-zero = errno in most cases)
-    file descriptor = "3" (or -1 if not applicable)
-    bytes transferred = "0" (only non-zero for read/write operations)
-    s1 = "/home/paul/foo/bar.txt" (optional; context-dependent)
-    s2 = "wt" (optional; context-dependent)
+## Operations
 
-The formatted string of metrics is then transferred via IPC to
-another process. Currently this IPC mechanism is either Unix
-SysV message queues or TCP sockets on localhost. Message queues
-are preferred.
+| Operation     | Domain           | Functions |
+| ---------     | ------           | --------- |
+| CLOSEDIR      | DIR_METADATA     | closedir |
+| DIRFD         | DIR_METADATA     | dirfd |
+| OPENDIR       | DIR_METADATA     | fdopendir, opendir |
+| READDIR       | DIR_METADATA     | readdir, readdir_r |
+| REWINDDIR     | DIR_METADATA     | rewinddir |
+| SCANDIR       | DIR_METADATA     | NOT-IMPLEMENTED |
+| SEEKDIR       | DIR_METADATA     | seekdir |
+| TELLDIR       | DIR_METADATA     | telldir |
+| CHDIR         | DIRS             | NOT-IMPLEMENTED |
+| MKDIR         | DIRS             | NOT-IMPLEMENTED |
+| RMDIR         | DIRS             | NOT-IMPLEMENTED |
+| DUP           | FILE_DESCRIPTORS | NOT-IMPLEMENTED |
+| FCNTL         | FILE_DESCRIPTORS | NOT-IMPLEMENTED |
+| ACCESS        | FILE_METADATA    | access, faccessat |
+| CHMOD         | FILE_METADATA    | chmod, fchmod, fchmodat |
+| CHOWN         | FILE_METADATA    | chown, fchown, fchownat, lchown |
+| STAT          | FILE_METADATA    | fstat, lstat, stat |
+| UTIME         | FILE_METADATA    | utime |
+| CLOSE         | FILE_OPEN_CLOSE  | close, fclose |
+| OPEN          | FILE_OPEN_CLOSE  | open, open64, creat, creat64, fopen, fopen64 |
+| _IO_NEW_FOPEN | FILE_OPEN_CLOSE  | _IO_new_fopen |
+| READ          | FILE_READ        | read, pread, readv, preadv, fread, fscanf, vfscanf |
+| ALLOCATE      | FILE_SPACE       | posix_fallocate, fallocate |
+| TRUNCATE      | FILE_SPACE       | truncate, ftruncate |
+| MOUNT         | FILE_SYSTEMS     | mount |
+| UMOUNT        | FILE_SYSTEMS     | umount, umount2 |
+| WRITE         | FILE_WRITE       | write, pwrite, writev, pwritev, fprintf, vfprintf, fwrite |
+| LINK          | LINKS            | NOT-IMPLEMENTED |
+| READLINK      | LINKS            | NOT-IMPLEMENTED |
+| UNLINK        | LINKS            | NOT-IMPLEMENTED |
+| CHROOT        | MISC             | NOT-IMPLEMENTED |
+| FLOCK         | MISC             | NOT-IMPLEMENTED |
+| MKNOD         | MISC             | NOT-IMPLEMENTED |
+| RENAME        | MISC             | NOT-IMPLEMENTED |
+| EXEC          | PROCESSES        | NOT-IMPLEMENTED |
+| FORK          | PROCESSES        | NOT-IMPLEMENTED |
+| KILL          | PROCESSES        | NOT-IMPLEMENTED |
+| SEEK          | SEEKS            | NOT-IMPLEMENTED |
+| SOCKET        | SOCKETS          | NOT-IMPLEMENTED |
+| FLUSH         | SYNCS            | fflush |
+| SYNC          | SYNCS            | fsync, fdatasync, sync, syncfs |
+| GETXATTR      | XATTRS           | getxattr, lgetxattr, fgetxattr |
+| LISTXATTR     | XATTRS           | listxattr, llistxattr, flistxattr |
+| REMOVEXATTR   | XATTRS           | removexattr, fremovexattr, lremovexattr |
+| SETXATTR      | XATTRS           | setxattr, lsetxattr, fsetxattr |
 
-In some cases, there may be a great deal of unwanted captures that
-occur when process is first started. An example would be running
-a Python program. When the Python interpreter starts it reads
-many files as part of its initialization.
 
-The monitor has a simple feature to prevent such undesirable
-startup noise. If you set a value for the environment variable
-'START_ON_OPEN', the monitor will start in 'paused' mode. It
-will remain paused until a file open operation occurs with
-the file path containing the specified value. 
+## Domains
+
+| Domain           | Description                      | Operations |
+| ------           | -----------                      | ---------- |
+| DIR_METADATA     | directory metadata operations    | CLOSEDIR, DIRFD, OPENDIR, READDIR, REWINDDIR, SCANDIR, SEEKDIR, TELLDIR |
+| DIRS             | directory operations             | CHDIR, MKDIR, RMDIR |
+| FILE_DESCRIPTORS | file descriptor manipulations    | DUP, FCNTL |
+| FILE_METADATA    | file metadata operations         | ACCESS, CHMOD, CHOWN, STAT, UTIME |
+| FILE_WRITE       | file write operations            | WRITE |
+| FILE_READ        | file read operations             | READ |
+| FILE_OPEN_CLOSE  | file open/close operations       | CLOSE, OPEN, _IO_NEW_FOPEN |
+| FILE_SYSTEMS     | file system operations           | MOUNT, UMOUNT |
+| FILE_SPACE       | file space adjustment operations | ALLOCATE, TRUNCATE |
+| LINKS            | hard and soft link operations    | LINK, READLINK, UNLINK |
+| MISC             | misc. operations                 | CHROOT, FLOCK, MKNOD, RENAME |
+| PROCESSES        | process operations               | EXEC, FORK, KILL |
+| SEEKS            | file seek operations             | SEEK |
+| SOCKETS          | socket operations                | NOT-IMPLEMENTED |
+| SYNCS            | file sync/flush operations       | FLUSH, SYNC |
+| XATTRS           | extended attribute operations    | GETXATTR, LISTXATTR, REMOVEXATTR, SETXATTR |
+
+## Environment Variables
+
+| Variable           | Required? | Description |
+| ------             | --------- | ----------- |
+| FACILITY_ID        | N         | Identifies the component. defaults to 'u' |
+| MESSAGE_QUEUE_PATH | Y         | File path of existing file associated with SysV message queue |
+| MONITOR_DOMAINS    | N         | list of comma-separated domains to monitor or 'ALL' |
+| START_ON_OPEN      | N         | causes io monitor to start in paused mode |
+
+
+## START_ON_OPEN
+
+START_ON_OPEN causes io monitor to start in paused mode. It will remain paused until a
+file is opened whose path contains (substring) the value specified by this variable. 
+
+In some cases, there may be a great deal of unwanted captures that occur when process
+is first started. An example would be running a Python program. When the Python
+interpreter starts it reads many files as part of its initialization.
+
+The START_ON_OPEN feature can prevent such undesirable startup noise. If you set a
+value for the environment variable 'START_ON_OPEN', the monitor will start in 'paused'
+mode. It will remain paused until a file open operation occurs with the file path
+containing the specified value. 
 
 For example, you might set START_ON_OPEN as:
 
     export START_ON_OPEN="hello_world.txt"
 
-for a Python program that begins by opening the file "hello_world.txt".
-This technique would prevent the normal Python initialization traffic
-from being captured by the monitor.
+for a Python program that begins by opening the file "hello_world.txt". This technique
+would prevent the normal Python initialization traffic from being captured by the monitor.
+
+## Metrics
+
+| Metric            | Description |
+| ------            | ----------- |
+| facility          | identifer of who generated the metrics |
+| ts                | unix timestamp of when operation occurred |
+| duration          | elapsed time of operation in milliseconds |
+| pid               | process id where metrics were collected |
+| domain            | domain grouping for the operation |
+| op-type           | type of operation |
+| error code        | integer error code. 0 = success; non-zero = errno in most cases |
+| fd                | file descriptor associated with operation, or -1 if N/A |
+| bytes transferred | number of bytes transferred for read/write operations |
+| arg1              | context dependent |
+| arg2              | context dependent |
 
