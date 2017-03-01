@@ -39,6 +39,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <utime.h>
+#include <time.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -51,6 +52,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 #include "ops.h"
 #include "domains.h"
 
@@ -2269,7 +2271,7 @@ int fallocate(int fd, int mode, off_t offset, off_t len)
    PUTS("ftruncate")
    DECL_VARS()
    GET_START_TIME()
-   const int rc = orig_allocate(fd, mode, offset, len);
+   const int rc = orig_fallocate(fd, mode, offset, len);
    GET_END_TIME()
    ssize_t bytes_written;
 
