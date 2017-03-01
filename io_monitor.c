@@ -55,6 +55,7 @@
 #include <arpa/inet.h>
 #include "ops.h"
 #include "domains.h"
+#include "mq.h"
 
 
 // to build:
@@ -93,12 +94,6 @@ gettimeofday(&end_time, NULL);
 &end_time
 
 
-
-typedef struct _MONITOR_MESSAGE
-{
-   long message_type;
-   char monitor_record[256];
-} MONITOR_MESSAGE;
 
 // environment variables that we respond to
 static const char* ENV_FACILITY_ID = "FACILITY_ID";

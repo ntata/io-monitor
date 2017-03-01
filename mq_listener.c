@@ -30,15 +30,10 @@
 #include "ops.h"
 #include "ops_names.h"
 #include "domains_names.h"
+#include "mq.h"
 
 static const int MESSAGE_QUEUE_PROJECT_ID = 'm';
 #define STR_LEN 256
-
-typedef struct _MONITOR_MESSAGE
-{
-   long message_type;
-   char monitor_record[256];
-} MONITOR_MESSAGE;
 
 //*****************************************************************************
 
