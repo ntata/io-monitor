@@ -144,8 +144,8 @@ void initialize_monitor();
 unsigned int domain_list_to_bit_mask(const char* domain_list);
 
 //***********  IPC mechanisms  ***********
-int send_tcp_socket(const char* monitor_record);
-int send_msg_queue(const char* monitor_record);
+int send_tcp_socket(struct monitor_record_t* monitor_record);
+int send_msg_queue(struct monitor_record_t* monitor_record);
 
 //***********  monitoring mechanism  ***********
 void record(DOMAIN_TYPE dom_type,
@@ -400,14 +400,44 @@ if (NULL == orig_open) initialize_monitor();
 //*****************************************************************************
 
 __attribute__((constructor)) void init() {
-   PUTS("init")
-   initialize_monitor();
+   PUTS("init");
+   DECL_VARS()
+   GET_START_TIME()
+   CHECK_LOADED_FNS();
+   /* retrieve actual command that was called */
+   char cmdline[PATH_MAX];
+   sprintf(cmdline, "/proc/%d/cmdline", getpid());
+   int fd = orig_open(cmdline, O_RDONLY);
+   int len = orig_read(fd, cmdline, PATH_MAX);
+   while (--len) {
+     if (!cmdline[len])
+       cmdline[len] = ' ';
+   }
+   orig_close(fd);
+   /* here retrieve actual path */
+
+   GET_END_TIME();
+
+   
+   record(START_STOP, START, 0, cmdline, NULL,
+          TIME_BEFORE(), TIME_AFTER(), 0, ZERO_BYTES);
+   
 }
 
 //*****************************************************************************
 
 __attribute__((destructor))  void fini() {
    PUTS("fini")
+   DECL_VARS()
+   GET_START_TIME()
+   CHECK_LOADED_FNS();
+   /* collect CPU usage, brk/heap size metrics from /proc */
+
+   GET_END_TIME();
+
+   
+   record(START_STOP, STOP, 0, NULL, NULL,
+          TIME_BEFORE(), TIME_AFTER(), 0, ZERO_BYTES);
    //TODO: let collector know that we're done?
 }
 
@@ -594,10 +624,9 @@ void initialize_monitor() {
 
 //*****************************************************************************
 
-int send_msg_queue(const char* monitor_record)
+int send_msg_queue(struct monitor_record_t* monitor_record)
 {
    MONITOR_MESSAGE monitor_message;
-
    if (message_queue_key == MQ_KEY_NONE) {
       if (message_queue_path != NULL) {
          message_queue_key = ftok(message_queue_path, message_project_id);
@@ -614,17 +643,17 @@ int send_msg_queue(const char* monitor_record)
 
    memset(&monitor_message, 0, sizeof(MONITOR_MESSAGE));
    monitor_message.message_type = 1L;
-   strcpy(monitor_message.monitor_record, monitor_record);
+   memcpy(&monitor_message.monitor_record, monitor_record, sizeof (*monitor_record));
 
    return msgsnd(message_queue_id,
                  &monitor_message,
-                 256,
+                 sizeof(*monitor_record),
                  IPC_NOWAIT);
 }
 
 //*****************************************************************************
 
-int send_tcp_socket(const char* monitor_record)
+int send_tcp_socket(struct monitor_record_t* monitor_record)
 {
    int rc;
    int record_length;
@@ -636,7 +665,7 @@ int send_tcp_socket(const char* monitor_record)
    // set up a 10 byte header that includes the size (in bytes)
    // of our payload since sockets don't include any built-in
    // message boundaries
-   record_length = strlen(monitor_record);
+   record_length = sizeof(*monitor_record);
    memset(msg_size_header, 0, 10);
    snprintf(msg_size_header, 10, "%d", record_length);
 
@@ -697,6 +726,10 @@ int send_tcp_socket(const char* monitor_record)
 
 //*****************************************************************************
 
+#define RECORD_FIELD(f) record_output. f = f
+#define RECORD_FIELD_S(f) if (f) {strncpy(record_output.f, f, sizeof(record_output.f)); \
+    record_output.f[sizeof(record_output.f)-1] = 0; }
+
 void record(DOMAIN_TYPE dom_type,
             OP_TYPE op_type,
             int fd,
@@ -707,7 +740,7 @@ void record(DOMAIN_TYPE dom_type,
             int error_code,
             ssize_t bytes_transferred)
 {
-   char record_output[256];
+   struct monitor_record_t record_output;
    unsigned long timestamp;
    int rc_ipc;
    int record_length;
@@ -731,10 +764,11 @@ void record(DOMAIN_TYPE dom_type,
    }
 
    // ignore reporting on stdin, stdout, stderr
-   if ((fd > -1) && (fd < 3)) {
+   if ((fd > -1) && (fd < 3) && dom_type != START_STOP) {
       return;
    }
 
+   
    // if we're not monitoring this domain we just ignore
    const unsigned int domain_bit_flag = 1 << dom_type;
    if (0 == (domain_bit_flags & domain_bit_flag)) {
@@ -770,36 +804,24 @@ void record(DOMAIN_TYPE dom_type,
    timestamp = (unsigned long)time(NULL);
    pid = getpid();
 
-   bzero(record_output, sizeof(record_output));
-   if (NULL != s1) {
-      if (NULL != s2) {
-         snprintf(record_output,
-                  sizeof(record_output),
-                  "%s,%ld,%f,%d,%d,%d,%d,%d,%zu,%s,%s",
-                  facility, timestamp, elapsed_time, pid,
-                  dom_type, op_type, error_code, fd,
-                  bytes_transferred, s1, s2);
-      } else {
-         snprintf(record_output,
-                  sizeof(record_output),
-                  "%s,%ld,%f,%d,%d,%d,%d,%d,%zu,%s",
-                  facility, timestamp, elapsed_time, pid,
-                  dom_type, op_type, error_code, fd,
-                  bytes_transferred, s1);
-      }
-   } else {
-      snprintf(record_output,
-               sizeof(record_output),
-               "%s,%ld,%f,%d,%d,%d,%d,%d,%zu",
-               facility, timestamp, elapsed_time, pid,
-               dom_type, op_type, error_code, fd,
-               bytes_transferred);
-   }
+   bzero(&record_output, sizeof(record_output));
 
+   RECORD_FIELD_S(facility);
+   RECORD_FIELD(timestamp);
+   RECORD_FIELD(elapsed_time);
+   RECORD_FIELD(pid);
+   RECORD_FIELD(dom_type);
+   RECORD_FIELD(op_type);
+   RECORD_FIELD(error_code);
+   RECORD_FIELD(fd);
+   RECORD_FIELD(bytes_transferred);
+   RECORD_FIELD_S(s1);
+   RECORD_FIELD_S(s2);
+   
    if (message_queue_path != NULL) {
-      rc_ipc = send_msg_queue(record_output);
+      rc_ipc = send_msg_queue(&record_output);
    } else {
-      rc_ipc = send_tcp_socket(record_output);
+      rc_ipc = send_tcp_socket(&record_output);
    }
 
    if (rc_ipc != 0) {

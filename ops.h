@@ -44,5 +44,9 @@ typedef enum {
    TELLDIR,        // 39  (DIR_METADATA)
    DIRFD,          // 40  (DIR_METADATA)
    REWINDDIR,      // 41  (DIR_METADATA)
-   SCANDIR         // 42  (DIR_METADATA)
+   SCANDIR,        // 42  (DIR_METADATA)
+   // operations listed below are NOT directly associated with
+   // C functions
+   START,          // Start execution of program
+   STOP,           // Stop execution of program
 } OP_TYPE;
