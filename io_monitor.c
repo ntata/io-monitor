@@ -64,7 +64,6 @@
 
 
 // TODO and enhancements
-// - consider adding a way to filter here (inclusive or exclusive)
 // - implement missing intercept calls (FILE_SPACE, PROCESSES, etc.)
 // - find a better name/grouping for MISC
 // - should there be a sampling mechanism? (capturing everything on a busy
@@ -95,13 +94,16 @@ typedef struct _MONITOR_MESSAGE
    char monitor_record[256];
 } MONITOR_MESSAGE;
 
+// environment variables that we respond to
+static const char* ENV_FACILITY_ID = "FACILITY_ID";
+static const char* ENV_MESSAGE_QUEUE_PATH = "MESSAGE_QUEUE_PATH";
+static const char* ENV_START_ON_OPEN = "START_ON_OPEN";
+static const char* ENV_MONITOR_DOMAINS = "MONITOR_DOMAINS";
+
 static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
 static const int FD_NONE = -1;
 static const int MQ_KEY_NONE = -1;
-static const char* FACILITY_ID = "FACILITY_ID";
-static const char* MESSAGE_QUEUE_PATH = "MESSAGE_QUEUE_PATH";
-static const char* START_ON_OPEN = "START_ON_OPEN";
 static int failed_socket_connections = 0;
 static int failed_ipc_sends = 0;
 static const ssize_t ZERO_BYTES = 0L;
@@ -109,6 +111,7 @@ static const char* message_queue_path = NULL;
 static const int message_project_id = 'm';
 static key_t message_queue_key = -1;
 static int message_queue_id = -1;
+static unsigned int domain_bit_flags = 0;
 
 
 // set up some categories to group metrics
@@ -181,12 +184,32 @@ typedef enum {
 } OP_TYPE;
 
 
+// set up bit flags for each domain
+static unsigned int BIT_LINKS = (1 << LINKS);
+static unsigned int BIT_XATTRS = (1 << XATTRS);
+static unsigned int BIT_DIRS = (1 << DIRS);
+static unsigned int BIT_FILE_SYSTEMS = (1 << FILE_SYSTEMS);
+static unsigned int BIT_FILE_DESCRIPTORS = (1 << FILE_DESCRIPTORS);
+static unsigned int BIT_SYNCS = (1 << SYNCS);
+static unsigned int BIT_SOCKETS = (1 << SOCKETS);
+static unsigned int BIT_SEEKS = (1 << SEEKS);
+static unsigned int BIT_FILE_SPACE = (1 << FILE_SPACE);
+static unsigned int BIT_PROCESSES = (1 << PROCESSES);
+static unsigned int BIT_FILE_METADATA = (1 << FILE_METADATA);
+static unsigned int BIT_FILE_WRITE = (1 << FILE_WRITE);
+static unsigned int BIT_FILE_READ = (1 << FILE_READ);
+static unsigned int BIT_FILE_OPEN_CLOSE = (1 << FILE_OPEN_CLOSE);
+static unsigned int BIT_MISC = (1 << MISC);
+static unsigned int BIT_DIR_METADATA = (1 << DIR_METADATA);
+
+
 // a debugging aid that we can easily turn off/on
-#define PUTS(s)
-//puts(s);
+#define PUTS(s) \
+puts(s);
 
 //***********  initialization  ***********
 void initialize_monitor();
+unsigned int domain_list_to_bit_mask(const char* domain_list);
 
 //***********  IPC mechanisms  ***********
 int send_tcp_socket(const char* monitor_record);
@@ -453,6 +476,7 @@ __attribute__((constructor)) void init() {
 
 __attribute__((destructor))  void fini() {
    PUTS("fini")
+   //TODO: let collector know that we're done?
 }
 
 //*****************************************************************************
@@ -463,7 +487,7 @@ void load_library_functions() {
       return;
    }
 
-   start_on_open = getenv(START_ON_OPEN);
+   start_on_open = getenv(ENV_START_ON_OPEN);
    if (start_on_open != NULL) {
       paused = 1;
    }
@@ -559,17 +583,79 @@ void load_library_functions() {
 
 //*****************************************************************************
 
+unsigned int domain_list_to_bit_mask(const char* domain_list)
+{
+   unsigned int bit_mask = 0;
+   char* token;
+   char* domain_list_copy = strdup(domain_list);
+   char* rest = domain_list_copy;
+
+   while ((token = strtok_r(rest, ",", &rest))) {
+      if (!strcmp(token, "LINKS")) {
+         bit_mask |= BIT_LINKS;
+      } else if (!strcmp(token, "XATTRS")) {
+         bit_mask |= BIT_XATTRS;
+      } else if (!strcmp(token, "DIRS")) {
+         bit_mask |= BIT_DIRS;
+      } else if (!strcmp(token, "FILE_SYSTEMS")) {
+         bit_mask |= BIT_FILE_SYSTEMS;
+      } else if (!strcmp(token, "FILE_DESCRIPTORS")) {
+         bit_mask |= BIT_FILE_DESCRIPTORS;
+      } else if (!strcmp(token, "SYNCS")) {
+         bit_mask |= BIT_SYNCS;
+      } else if (!strcmp(token, "SOCKETS")) {
+         bit_mask |= BIT_SOCKETS;
+      } else if (!strcmp(token, "SEEKS")) {
+         bit_mask |= BIT_SEEKS;
+      } else if (!strcmp(token, "FILE_SPACE")) {
+         bit_mask |= BIT_FILE_SPACE;
+      } else if (!strcmp(token, "PROCESSES")) {
+         bit_mask |= BIT_PROCESSES;
+      } else if (!strcmp(token, "FILE_METADATA")) {
+         bit_mask |= BIT_FILE_METADATA;
+      } else if (!strcmp(token, "FILE_WRITE")) {
+         bit_mask |= BIT_FILE_WRITE;
+      } else if (!strcmp(token, "FILE_READ")) {
+         bit_mask |= BIT_FILE_READ;
+      } else if (!strcmp(token, "FILE_OPEN_CLOSE")) {
+         bit_mask |= BIT_FILE_OPEN_CLOSE;
+      } else if (!strcmp(token, "MISC")) {
+         bit_mask |= BIT_MISC;
+      } else if (!strcmp(token, "DIR_METADATA")) {
+         bit_mask |= BIT_DIR_METADATA;
+      }
+   }
+
+   free(domain_list_copy);
+
+   return bit_mask;
+}
+
+//*****************************************************************************
+
 void initialize_monitor() {
    // establish facility id
    memset(facility, 0, sizeof(facility));
-   const char* facility_id = getenv(FACILITY_ID);
+   const char* facility_id = getenv(ENV_FACILITY_ID);
    if (facility_id != NULL) {
       strncpy(facility, facility_id, 4);
    } else {
       facility[0] = 'u';  // unspecified
    }
 
-   message_queue_path = getenv(MESSAGE_QUEUE_PATH);
+   message_queue_path = getenv(ENV_MESSAGE_QUEUE_PATH);
+
+   const char* monitor_domain_list = getenv(ENV_MONITOR_DOMAINS);
+   if (monitor_domain_list != NULL) {
+      if (!strcmp(monitor_domain_list, "ALL")) {
+         domain_bit_flags = -1; // turn all of them on
+      } else {
+         domain_bit_flags = domain_list_to_bit_mask(monitor_domain_list);
+      }
+   } else {
+      // by default, don't record anything
+      domain_bit_flags = 0;
+   }
 
    load_library_functions();
 }
@@ -714,6 +800,13 @@ void record(DOMAIN_TYPE dom_type,
 
    // ignore reporting on stdin, stdout, stderr
    if ((fd > -1) && (fd < 3)) {
+      return;
+   }
+
+   // if we're not monitoring this domain we just ignore
+   const unsigned int domain_bit_flag = 1 << dom_type;
+   if (0 == (domain_bit_flags & domain_bit_flag)) {
+      PUTS("ignoring domain")
       return;
    }
 
