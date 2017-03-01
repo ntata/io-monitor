@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a thin shim intended to be used with LD_PRELOAD in order
+This is a thin shim intended to be used with **LD_PRELOAD** in order
 to capture/intercept many C library calls for the purpose of
 getting real-time metrics without having to change any existing
 source code. The idea is that relevant metrics should be
@@ -11,9 +11,9 @@ to handle.
 
 ## IPC Mechanism
 
-The preferred IPC mechanism is Unix SysV message queues. In order
+The preferred IPC mechanism is **Unix SysV message queues**. In order
 to make use of the captured metrics, you must set the environment
-variable MESSAGE_QUEUE_PATH to an existing file where user has
+variable **MESSAGE_QUEUE_PATH** to an existing file where user has
 permissions for writing.
 
 ## Identifying Metrics
@@ -135,7 +135,7 @@ would prevent the normal Python initialization traffic from being captured by th
 
 | Metric            | Description |
 | ------            | ----------- |
-| facility          | identifer of who generated the metrics |
+| facility          | identifier of component that generated the metrics |
 | ts                | unix timestamp of when operation occurred |
 | duration          | elapsed time of operation in milliseconds |
 | pid               | process id where metrics were collected |
