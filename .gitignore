@@ -1,4 +1,6 @@
 mq_listener
+domains_names.h
+ops_names.h
 
 # Object files
 *.o
