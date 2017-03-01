@@ -71,6 +71,8 @@ of operations as one (e.g., to enable/disable monitoring).
 | KILL          | PROCESSES        | NOT-IMPLEMENTED |
 | SEEK          | SEEKS            | NOT-IMPLEMENTED |
 | SOCKET        | SOCKETS          | NOT-IMPLEMENTED |
+| START         | START_STOP       | startup of a process (no corresponding function call) |
+| STOP          | START_STOP       | end of a process (no corresponding function call) |
 | FLUSH         | SYNCS            | fflush |
 | SYNC          | SYNCS            | fsync, fdatasync, sync, syncfs |
 | GETXATTR      | XATTRS           | getxattr, lgetxattr, fgetxattr |
@@ -92,11 +94,14 @@ of operations as one (e.g., to enable/disable monitoring).
 | FILE_OPEN_CLOSE  | file open/close operations       | CLOSE, OPEN, _IO_NEW_FOPEN |
 | FILE_SYSTEMS     | file system operations           | MOUNT, UMOUNT |
 | FILE_SPACE       | file space adjustment operations | ALLOCATE, TRUNCATE |
+| HTTP             | HTTP network operations          | TBD: http verb events |
 | LINKS            | hard and soft link operations    | LINK, READLINK, UNLINK |
 | MISC             | misc. operations                 | CHROOT, FLOCK, MKNOD, RENAME |
+| NETWORKING       | networking operations            | TBD: accept, listen, connect, etc. |
 | PROCESSES        | process operations               | EXEC, FORK, KILL |
 | SEEKS            | file seek operations             | SEEK |
 | SOCKETS          | socket operations                | NOT-IMPLEMENTED |
+| START_STOP       | begin and end of processes       | START, STOP |
 | SYNCS            | file sync/flush operations       | FLUSH, SYNC |
 | XATTRS           | extended attribute operations    | GETXATTR, LISTXATTR, REMOVEXATTR, SETXATTR |
 
