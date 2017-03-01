@@ -33,25 +33,11 @@
 #include "mq.h"
 
 static const int MESSAGE_QUEUE_PROJECT_ID = 'm';
-#define STR_LEN 256
 
 //*****************************************************************************
 
-void print_log_entry(char*data)
+void print_log_entry(struct monitor_record_t *data)
 {
-  char facility[STR_LEN];
-  int timestamp;
-  float elapsed_time;
-  int pid;
-
-  int dom_type = 0;
-  int op_type = 0;
-
-  int error_code;
-  int fd;
-  size_t bytes_transferred;
-  char s1[STR_LEN];
-  //puts(data);
 
   char *d = data;
   static int ln=0;
@@ -67,24 +53,16 @@ void print_log_entry(char*data)
 	   "XFER", "PARM");
   }
 
-  /* replace commad w spaces so that sscanf can parse string */
-  while (*d) {
-    if (*d == ',') *d=' ';
-    d++;
-  }
-
-  sscanf(data,
-	 "%s %d %f %d %d %d %d %d %zu %s" ,
-	 facility, &timestamp, &elapsed_time, &pid,
-	 &dom_type, &op_type, &error_code, &fd,
-	 &bytes_transferred, s1);
   
   
-  printf("%10s %10d %8.4f %5d %20s  %-20s %3d %5d %8zu %s\n",
-	 facility, timestamp, elapsed_time, pid,
-	 domains_names[dom_type], ops_names[op_type], error_code, fd,
-	 bytes_transferred, s1);
-
+  printf("%10s %10d %8.4f %5d %20s  %-20s %3d %5d %8zu %s %s\n",
+	 data->facility,
+	 data->timestamp,
+	 data->elapsed_time,
+	 data->pid,
+	 domains_names[data->dom_type],
+	 ops_names[data->op_type], data->error_code, data->fd,
+	 data->bytes_transferred, data->s1, data->s2);
 }
 
 
@@ -125,11 +103,11 @@ int main(int argc, char* argv[]) {
       memset(&monitor_message, 0, sizeof(MONITOR_MESSAGE));
       message_size_received = msgrcv(message_queue_id,
                                      &monitor_message,   // void* ptr
-                                     256,   // size_t nbytes
+                                     sizeof(struct monitor_record_t),   // size_t nbytes
                                      0,   // long type
                                      0);  // int flag
       if (message_size_received > 0) {
-         print_log_entry(monitor_message.monitor_record);
+         print_log_entry(&monitor_message.monitor_record);
       } else {
          printf("rc = %zu\n", message_size_received);
          printf("errno = %d\n", errno);
