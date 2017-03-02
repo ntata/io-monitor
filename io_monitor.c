@@ -2380,7 +2380,8 @@ int ftruncate(int fd, off_t length)
 }
 
 //*****************************************************************************
-
+#include <endian.h>
+#include <netinet/in.h>
 int connect(int socket, const struct sockaddr *addr, socklen_t addrlen)
 {
    CHECK_LOADED_FNS()
@@ -2395,10 +2396,20 @@ int connect(int socket, const struct sockaddr *addr, socklen_t addrlen)
    if (ret == -1) {
       error_code = errno;
    }
-
+   /* for now assume that addr->sa_family = AF_INET; for inet6 or other sockets,
+      different way of differentiating will be needed */
+   if (addr->sa_family != AF_INET) {
+     PUTS("no inet?:");
+   }
+   printf("addrsz: %d \n", addrlen);
+   struct sockaddr_in * ai = (((struct sockaddr_in*)(addr)));
    char* real_path = malloc(100);
-   const char* ntop_res = inet_ntop(AF_INET, addr->sa_data, real_path, addrlen);
-   
+   char* ip = (char*)&ai->sin_addr;
+
+   sprintf(&real_path[0], "%u.%u.%u.%u:%u" ,
+	   0xff& ip[0], 0xff& ip[1] ,0xff& ip[2] ,0xff& ip[3],
+	   be16toh(ai->sin_port));
+
    record(SOCKETS, CONNECT, fd, real_path, NULL,
           TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
    free(real_path);
@@ -2408,7 +2419,7 @@ int connect(int socket, const struct sockaddr *addr, socklen_t addrlen)
 
 //*****************************************************************************
 
-//typedef int accept_f_type(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
-//typedef int listen_f_type(int sockfd, int backlog)
-//typedef int socket_f_type(int domain, int type, int protocol);
+//int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+//int listen(int sockfd, int backlog)
+int socket(int domain, int type, int protocol);
 
