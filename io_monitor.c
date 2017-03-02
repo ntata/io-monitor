@@ -101,7 +101,6 @@ static const char* ENV_FACILITY_ID = "FACILITY_ID";
 static const char* ENV_MESSAGE_QUEUE_PATH = "MESSAGE_QUEUE_PATH";
 static const char* ENV_START_ON_OPEN = "START_ON_OPEN";
 static const char* ENV_MONITOR_DOMAINS = "MONITOR_DOMAINS";
-static const char* ENV_START_ON_ELAPSED = "START_ON_ELAPSED";
 
 static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
@@ -303,7 +302,7 @@ typedef int (*orig_truncate_f_type)(const char* path, off_t length);
 typedef int (*orig_ftruncate_f_type)(int fd, off_t length);
 
 // network
-typedef int (*orig_connect_f_type)(int socket, const struct sockaddr *addr, socklen_t *addrlen);
+typedef int (*orig_connect_f_type)(int socket, const struct sockaddr *addr, socklen_t addrlen);
 typedef int (*orig_accept_f_type)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 typedef int (*orig_listen_f_type)(int sockfd, int backlog);
 typedef int (*orig_socket_f_type)(int domain, int type, int protocol);
@@ -314,9 +313,6 @@ static char facility[5];
 static const char* start_on_open = NULL;
 static int socket_fd = -1;
 static int paused = 0;
-static have_elapsed_threshold = 0;
-static double elapsed_threshold = 0.0;
-
 
 // open/close
 static orig_open_f_type orig_open = NULL;
@@ -476,16 +472,8 @@ void load_library_functions() {
    }
 
    start_on_open = getenv(ENV_START_ON_OPEN);
-   const char* start_on_elapsed = getenv(ENV_START_ON_ELAPSED);
    if (start_on_open != NULL) {
       paused = 1;
-   } else if (start_on_elapsed != NULL) {
-      double elapsed_value = atof(start_on_elapsed);
-      if (elapsed_value > 0.1) {
-         elapsed_threshold = elapsed_value;
-         have_elapsed_threshold = 1;
-         paused = 1;
-      }
    }
 
    // open/close
@@ -801,26 +789,19 @@ void record(DOMAIN_TYPE dom_type,
          return;
       }
 
-      if (paused && (start_on_open != NULL) &&
-          (strstr(s1, start_on_open) != NULL)) {
-         PUTS("starting on open")
+      if (paused && (strstr(s1, start_on_open) != NULL)) {
          paused = 0;
       }
+   }
+
+   if (paused) {
+      return;
    }
 
    // sec to msec
    elapsed_time = (end_time->tv_sec - start_time->tv_sec) * 1000.0;
    // usec to ms
    elapsed_time += (end_time->tv_usec - start_time->tv_usec) / 1000.0;
-
-   if (paused && have_elapsed_threshold && (elapsed_time > elapsed_threshold)) {
-      PUTS("starting on elapsed")
-      paused = 0;
-   }
-
-   if (paused) {
-      return;
-   }
 
    timestamp = (unsigned long)time(NULL);
    pid = getpid();
@@ -2380,4 +2361,35 @@ int ftruncate(int fd, off_t length)
 }
 
 //*****************************************************************************
+
+int connect(int socket, const struct sockaddr *addr, socklen_t addrlen)
+{
+   CHECK_LOADED_FNS()
+   PUTS("connect")
+   DECL_VARS()
+   GET_START_TIME()
+     const int ret = orig_connect(socket, addr, addrlen);
+   GET_END_TIME();
+
+   const int fd = socket;
+
+   if (ret == -1) {
+      error_code = errno;
+   }
+
+   char* real_path = malloc(100);
+   const char* ntop_res = inet_ntop(AF_INET, addr->sa_data, real_path, addrlen);
+   
+   record(SOCKETS, CONNECT, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
+   return ret;
+}
+
+//*****************************************************************************
+
+//typedef int accept_f_type(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+//typedef int listen_f_type(int sockfd, int backlog)
+//typedef int socket_f_type(int domain, int type, int protocol);
 
