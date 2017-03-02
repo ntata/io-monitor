@@ -135,7 +135,8 @@ static unsigned int BIT_FILE_READ = (1 << FILE_READ);
 static unsigned int BIT_FILE_OPEN_CLOSE = (1 << FILE_OPEN_CLOSE);
 static unsigned int BIT_MISC = (1 << MISC);
 static unsigned int BIT_DIR_METADATA = (1 << DIR_METADATA);
-
+static unsigned int BIT_START_STOP = (1 << START_STOP);
+static unsigned int BIT_HTTP = (1 << HTTP);
 
 // a debugging aid that we can easily turn off/on
 #ifdef NDEBUG
@@ -301,13 +302,19 @@ typedef int (*orig_fallocate_f_type)(int fd, int mode, off_t offset, off_t len);
 typedef int (*orig_truncate_f_type)(const char* path, off_t length);
 typedef int (*orig_ftruncate_f_type)(int fd, off_t length);
 
+// network
+typedef int (*orig_connect_f_type)(int socket, const struct sockaddr *addr, socklen_t addrlen);
+typedef int (*orig_accept_f_type)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+typedef int (*orig_listen_f_type)(int sockfd, int backlog);
+typedef int (*orig_socket_f_type)(int domain, int type, int protocol);
+   
 
 // unique identifier to know originator of metrics. defaults to 'u' (unspecified)
 static char facility[5];
 static const char* start_on_open = NULL;
 static int socket_fd = -1;
 static int paused = 0;
-static have_elapsed_threshold = 0;
+static int have_elapsed_threshold = 0;
 static double elapsed_threshold = 0.0;
 
 
@@ -399,6 +406,11 @@ static orig_fallocate_f_type orig_fallocate = NULL;
 static orig_truncate_f_type orig_truncate = NULL;
 static orig_ftruncate_f_type orig_ftruncate = NULL;
 
+// network
+static orig_connect_f_type orig_connect = NULL;
+static orig_accept_f_type orig_accept = NULL;
+static orig_listen_f_type orig_listen = NULL;
+static orig_socket_f_type orig_socket = NULL;
 
 void load_library_functions();
 
@@ -563,6 +575,13 @@ void load_library_functions() {
    // truncate
    orig_truncate = (orig_truncate_f_type)dlsym(RTLD_NEXT,"truncate");
    orig_ftruncate = (orig_ftruncate_f_type)dlsym(RTLD_NEXT,"ftruncate");
+
+   // network
+   orig_connect = (orig_connect_f_type)dlsym(RTLD_NEXT,"connect");
+   orig_accept = (orig_accept_f_type)dlsym(RTLD_NEXT,"accept");
+   orig_listen = (orig_listen_f_type)dlsym(RTLD_NEXT,"listen");
+   orig_socket = (orig_socket_f_type)dlsym(RTLD_NEXT,"socket");
+
 }
 
 //*****************************************************************************
@@ -2361,4 +2380,35 @@ int ftruncate(int fd, off_t length)
 }
 
 //*****************************************************************************
+
+int connect(int socket, const struct sockaddr *addr, socklen_t addrlen)
+{
+   CHECK_LOADED_FNS()
+   PUTS("connect")
+   DECL_VARS()
+   GET_START_TIME()
+     const int ret = orig_connect(socket, addr, addrlen);
+   GET_END_TIME();
+
+   const int fd = socket;
+
+   if (ret == -1) {
+      error_code = errno;
+   }
+
+   char* real_path = malloc(100);
+   const char* ntop_res = inet_ntop(AF_INET, addr->sa_data, real_path, addrlen);
+   
+   record(SOCKETS, CONNECT, fd, real_path, NULL,
+          TIME_BEFORE(), TIME_AFTER(), error_code, ZERO_BYTES);
+   free(real_path);
+
+   return ret;
+}
+
+//*****************************************************************************
+
+//typedef int accept_f_type(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+//typedef int listen_f_type(int sockfd, int backlog)
+//typedef int socket_f_type(int domain, int type, int protocol);
 

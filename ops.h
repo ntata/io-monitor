@@ -45,9 +45,20 @@ typedef enum {
    DIRFD,          // 40  (DIR_METADATA)
    REWINDDIR,      // 41  (DIR_METADATA)
    SCANDIR,        // 42  (DIR_METADATA)
+   CONNECT,        // 43  (SOCKETS)
+   ACCEPT,         // 44  (SOCKETS)
+   LISTEN,         // 45  (SOCKETS)
+   
    // operations listed below are NOT directly associated with
    // C functions
    START,          // Start execution of program
    STOP,           // Stop execution of program
+   HTTP_REQ_SEND,  // Send an HTTP request. s1 will contain verb and URL
+   HTTP_REQ_RECV,  // Get an HTTP request.  s1 will contain verb and URL
+   HTTP_RESP_SEND, // Send an HTTP response. error code field will contain response code
+   HTTP_RESP_RECV, // Receive HTTP response
+   HTTP_RESP_FINI_SEND, // Sent final byte of HTTP response
+   HTTP_RESP_FINI_RECV, // Receive final byte of HTTP response
+   
    END_OPS         // keep this one as last
 } OP_TYPE;
