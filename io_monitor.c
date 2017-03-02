@@ -135,7 +135,6 @@ static unsigned int BIT_FILE_READ = (1 << FILE_READ);
 static unsigned int BIT_FILE_OPEN_CLOSE = (1 << FILE_OPEN_CLOSE);
 static unsigned int BIT_MISC = (1 << MISC);
 static unsigned int BIT_DIR_METADATA = (1 << DIR_METADATA);
-static unsigned int BIT_NETWORKING = (1 << NETWORKING);
 static unsigned int BIT_START_STOP = (1 << START_STOP);
 static unsigned int BIT_HTTP = (1 << HTTP);
 
@@ -303,6 +302,12 @@ typedef int (*orig_fallocate_f_type)(int fd, int mode, off_t offset, off_t len);
 typedef int (*orig_truncate_f_type)(const char* path, off_t length);
 typedef int (*orig_ftruncate_f_type)(int fd, off_t length);
 
+// network
+typedef int (*orig_connect_f_type)(int socket, const struct sockaddr *addr, socklen_t *addrlen);
+typedef int (*orig_accept_f_type)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+typedef int (*orig_listen_f_type)(int sockfd, int backlog);
+typedef int (*orig_socket_f_type)(int domain, int type, int protocol);
+   
 
 // unique identifier to know originator of metrics. defaults to 'u' (unspecified)
 static char facility[5];
@@ -401,6 +406,11 @@ static orig_fallocate_f_type orig_fallocate = NULL;
 static orig_truncate_f_type orig_truncate = NULL;
 static orig_ftruncate_f_type orig_ftruncate = NULL;
 
+// network
+static orig_connect_f_type orig_connect = NULL;
+static orig_accept_f_type orig_accept = NULL;
+static orig_listen_f_type orig_listen = NULL;
+static orig_socket_f_type orig_socket = NULL;
 
 void load_library_functions();
 
@@ -565,6 +575,13 @@ void load_library_functions() {
    // truncate
    orig_truncate = (orig_truncate_f_type)dlsym(RTLD_NEXT,"truncate");
    orig_ftruncate = (orig_ftruncate_f_type)dlsym(RTLD_NEXT,"ftruncate");
+
+   // network
+   orig_connect = (orig_connect_f_type)dlsym(RTLD_NEXT,"connect");
+   orig_accept = (orig_accept_f_type)dlsym(RTLD_NEXT,"accept");
+   orig_listen = (orig_listen_f_type)dlsym(RTLD_NEXT,"listen");
+   orig_socket = (orig_socket_f_type)dlsym(RTLD_NEXT,"socket");
+
 }
 
 //*****************************************************************************
