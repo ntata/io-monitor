@@ -1,0 +1,3 @@
+#PROTOTYPE|DOMAIN|OP|S1|S2|HOOK_AFTER|HOOK_BEFORE
+int open(const char* pathname, int flags, int mode)| FILE_OPEN_CLOSE | OPEN |real_path|NULL|if (fd == -1) {error_code = errno;} char real_path[PATH_MAX]=""; realpath(pathname, real_path); |
+
