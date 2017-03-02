@@ -18,7 +18,6 @@ typedef enum {
    FILE_OPEN_CLOSE,   // 13  (open, close)
    MISC,              // 14  (miscellaneous; rename, flock, mknod, chroot, etc.)
    DIR_METADATA,      // 15  (opendir, readdir, seekdir, etc.)
-   NETWORKING,        // 16  (accept, listen, connect, etc. )
 // domains below are associated with system events not tied directly to function calls
    START_STOP,        // 17  (associated with starting and exiting an app)
    HTTP,              // 18  (HTTP verb events)
