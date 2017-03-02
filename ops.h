@@ -49,4 +49,5 @@ typedef enum {
    // C functions
    START,          // Start execution of program
    STOP,           // Stop execution of program
+   END_OPS         // keep this one as last
 } OP_TYPE;
