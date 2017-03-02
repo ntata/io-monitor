@@ -100,6 +100,7 @@ static const char* ENV_FACILITY_ID = "FACILITY_ID";
 static const char* ENV_MESSAGE_QUEUE_PATH = "MESSAGE_QUEUE_PATH";
 static const char* ENV_START_ON_OPEN = "START_ON_OPEN";
 static const char* ENV_MONITOR_DOMAINS = "MONITOR_DOMAINS";
+static const char* ENV_START_ON_ELAPSED = "START_ON_ELAPSED";
 
 static const int SOCKET_PORT = 8001;
 static const int DOMAIN_UNSPECIFIED = -1;
@@ -301,6 +302,9 @@ static char facility[5];
 static const char* start_on_open = NULL;
 static int socket_fd = -1;
 static int paused = 0;
+static have_elapsed_threshold = 0;
+static double elapsed_threshold = 0.0;
+
 
 // open/close
 static orig_open_f_type orig_open = NULL;
@@ -450,8 +454,16 @@ void load_library_functions() {
    }
 
    start_on_open = getenv(ENV_START_ON_OPEN);
+   const char* start_on_elapsed = getenv(ENV_START_ON_ELAPSED);
    if (start_on_open != NULL) {
       paused = 1;
+   } else if (start_on_elapsed != NULL) {
+      double elapsed_value = atof(start_on_elapsed);
+      if (elapsed_value > 0.1) {
+         elapsed_threshold = elapsed_value;
+         have_elapsed_threshold = 1;
+         paused = 1;
+      }
    }
 
    // open/close
@@ -787,19 +799,26 @@ void record(DOMAIN_TYPE dom_type,
          return;
       }
 
-      if (paused && (strstr(s1, start_on_open) != NULL)) {
+      if (paused && (start_on_open != NULL) &&
+          (strstr(s1, start_on_open) != NULL)) {
+         PUTS("starting on open")
          paused = 0;
       }
-   }
-
-   if (paused) {
-      return;
    }
 
    // sec to msec
    elapsed_time = (end_time->tv_sec - start_time->tv_sec) * 1000.0;
    // usec to ms
    elapsed_time += (end_time->tv_usec - start_time->tv_usec) / 1000.0;
+
+   if (paused && have_elapsed_threshold && (elapsed_time > elapsed_threshold)) {
+      PUTS("starting on elapsed")
+      paused = 0;
+   }
+
+   if (paused) {
+      return;
+   }
 
    timestamp = (unsigned long)time(NULL);
    pid = getpid();
