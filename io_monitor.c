@@ -314,7 +314,7 @@ static char facility[5];
 static const char* start_on_open = NULL;
 static int socket_fd = -1;
 static int paused = 0;
-static have_elapsed_threshold = 0;
+static int have_elapsed_threshold = 0;
 static double elapsed_threshold = 0.0;
 
 
