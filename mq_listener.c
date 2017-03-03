@@ -26,6 +26,9 @@
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include "domains.h"
 #include "ops.h"
 #include "ops_names.h"
@@ -70,15 +73,22 @@ int main(int argc, char* argv[]) {
    int rc;
    ssize_t message_size_received;
    MONITOR_MESSAGE monitor_message;
+   int dumpfd = -1;
 
+   
    if (argc < 2) {
       printf("error: missing arguments\n");
-      printf("usage: %s <msg-queue-path>\n", argv[0]);
+      printf("usage: %s <msg-queue-path> <dump-file>\n", argv[0]);
       exit(1);
    }
 
    message_queue_path = argv[1];
 
+   if (argc > 2)
+     dumpfd = open(argv[2], O_WRONLY | O_CREAT, 0444);
+   if (dumpfd > 0) {
+     lseek(dumpfd, 0, SEEK_END);
+   }
    message_queue_key = ftok(message_queue_path, MESSAGE_QUEUE_PROJECT_ID);
    if (message_queue_key == -1) {
       printf("error: unable to obtain key for message queue path '%s'\n",
@@ -103,6 +113,13 @@ int main(int argc, char* argv[]) {
                                      0,   // long type
                                      0);  // int flag
       if (message_size_received > 0) {
+	 if (dumpfd > 0) {
+	   int wres = write(dumpfd, &monitor_message.monitor_record,
+			    sizeof(struct monitor_record_t));
+	   if (wres != sizeof(struct monitor_record_t)) {
+	     fprintf(stderr, "Warning: dump file write failed");
+	   }
+	 }
          print_log_entry(&monitor_message.monitor_record);
       } else {
          printf("rc = %zu\n", message_size_received);
@@ -110,6 +127,9 @@ int main(int argc, char* argv[]) {
       }
    }
 
+   if (dumpfd > 0) {
+     close(dumpfd);
+   }
    return 0;
 }
 
