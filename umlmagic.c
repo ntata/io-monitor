@@ -68,6 +68,19 @@ int find_col_by_pid(int pid)
   return -1;
 }
 int top_pos = 200;
+
+int port_to_col[1<<16];
+struct arrow {
+  int from_x;
+  int to_x;
+  int y_point;
+  char description[PATH_MAX];
+};
+int num_arrows = 0;
+
+#define MAX_ARROWS 4096
+struct arrow arrows[MAX_ARROWS];
+
 /* find names of primary columns */
 void find_columns()
 {
@@ -127,6 +140,30 @@ void find_columns()
 	top_pos += 10 - columns[cid].height;
 	columns[cid].height = 10;
       }
+    } else if (dump[i].op_type == BIND) {
+      int cid = find_col_by_pid(dump[i].pid);
+      int i1,i2,i3,i4;
+      int port;
+      sscanf(dump[i].s1,"%d.%d.%d.%d:%d", &i1, &i2, &i3, &i4, &port);
+      printf("%s listens on port %d\n", columns[cid].exe_fn, port);
+      
+      port_to_col[port] = cid;
+    } else if (dump[i].op_type == CONNECT) {
+      int scid = find_col_by_pid(dump[i].pid);
+      int i1,i2,i3,i4;
+      int port;
+      sscanf(dump[i].s1,"%d.%d.%d.%d:%d", &i1, &i2, &i3, &i4, &port);
+      printf("%s connects to port %d\n", columns[scid].exe_fn, port);
+      int tcid = port_to_col[port];
+
+      arrows[num_arrows].from_x = columns[scid].mar_left + COL_WIDTH / 2;
+      arrows[num_arrows].to_x = columns[tcid].mar_left + COL_WIDTH / 2;
+      arrows[num_arrows].y_point = top_pos+5;
+      sprintf(arrows[num_arrows].description, "Connec to to %d.%d.%d.%d:%d",
+	      i1, i2, i3, i4, port);
+
+      top_pos+=10;
+      num_arrows++;
     }
   }
   top_pos+=20;
@@ -152,7 +189,12 @@ void dump_columns()
 	  "background: white;"
 	  "border: solid black 1px;"
 	  "}\n"
-	  ".tp .tooltip {"
+	  ".arrow {position:absolute; border-top: solid black 1px; z-index:6}\n"
+	  ".arrow::after {content: \">\";position: relative; align: right;  margin-right:0; margin-top: -28px;"
+	  "display: block; text-align:right; width:100%%; right:0px; text-height: 10px; z-index:5}\n"
+	  ".arrow:hover {border-top:red solid 2px;}\n"
+	  ".arrow:hover::after {color:red;}\n"
+	  ".tp .tooltip, .arrow .tooltip {"
 	  " visibility: hidden;"
 	  " position: fixed;"
 	  " right: 0;"
@@ -161,7 +203,7 @@ void dump_columns()
 	  " bottom: 0;"
 	  " background: pink }\n"
 	  " p {margin: 0.3em}\n"
-	  ".tp:hover {background:yellow}\n"
+	  ".tp:hover {background:yellow; border: solid red 1px}\n"
 	  "</style></head>"
 	  );
   fprintf(htm,"<body>");
@@ -225,6 +267,31 @@ void dump_columns()
 	      columns[i].mar_left + COL_WIDTH/2);	      
     }
   }
+
+  for (int i = 0 ; i != num_arrows ; ++i) {
+    fprintf(htm,
+	  "<div class=\"arrow\" style=\""
+	    "width: %dpx;"
+	    "height: %dpx;"
+	    "top: %dpx;"
+	    "left: %dpx"
+	    "\""
+	    "onmouseover=\""
+	    "document.getElementById('hintbox').innerHTML ="
+	    "document.getElementById('h%d').innerHTML;"
+	    "\""
+	    ">&nbsp; <div id=\"h%d\" class=\"tooltip\">"
+	    "<p>%s</p>"
+	    "</div> </div>\n",
+	    arrows[i].to_x-arrows[i].from_x,
+	    10,
+	    arrows[i].y_point,
+	    arrows[i].from_x,
+	    i+num_columns,i+num_columns,
+	    arrows[i].description
+	    );
+  }
+
   fprintf(htm,"</body>");
   fclose(htm);
 }
