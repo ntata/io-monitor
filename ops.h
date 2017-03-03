@@ -48,6 +48,7 @@ typedef enum {
    CONNECT,        // 43  (SOCKETS)
    ACCEPT,         // 44  (SOCKETS)
    LISTEN,         // 45  (SOCKETS)
+   BIND,           // 46  (SOCKETS)
    
    // operations listed below are NOT directly associated with
    // C functions
